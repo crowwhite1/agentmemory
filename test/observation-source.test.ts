@@ -58,6 +58,10 @@ function rig() {
     }),
   };
   registerObserveFunction(sdk as never, kv as never);
+  // Test memory/source semantics independently of the production queue.
+  // The real queue is exercised in compression-queue.test.ts.
+  sdk.registerFunction("mem::compression-enqueue", async (identity: any) =>
+    sdk.trigger({ function_id: "mem::compress", payload: identity }));
   registerReplayFunctions(sdk as never, kv as never);
   registerExportImportFunction(sdk as never, kv as never);
   registerSearchFunction(sdk as never, kv as never);
