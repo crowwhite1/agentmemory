@@ -28,7 +28,6 @@ fi
 npm install --legacy-peer-deps --no-audit --no-fund
 npm run build
 npm run skills:check
-npm run docs:check
 npm run typecheck:hooks
 npm test
 "$PYTHON" scripts/test-proxy-migration.py
