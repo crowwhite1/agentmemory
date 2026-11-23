@@ -115,13 +115,13 @@ export class OpenAIProvider implements MemoryProvider {
       const choice = data.choices?.[0];
       const message = choice?.message;
       const content = message?.content;
-      if (content?.trim()) {
-        return content;
-      }
       if (choice?.finish_reason === "length") {
         throw new Error(
-          `OpenAI response hit max_tokens (${this.maxTokens}) before any content. Raise MAX_TOKENS or lower OPENAI_REASONING_EFFORT.`,
+          `OpenAI response hit max_tokens (${this.maxTokens}); output is incomplete. Reduce the prompt size or adjust MAX_TOKENS.`,
         );
+      }
+      if (content?.trim()) {
+        return content;
       }
       const reasoning = message?.reasoning ?? message?.reasoning_content;
       if (reasoning) {
