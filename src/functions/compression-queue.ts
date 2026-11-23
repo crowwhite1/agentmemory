@@ -43,11 +43,13 @@ export function compressionQueueKey(sessionId: string, observationId: string): s
 }
 
 export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
+  start(): void;
   stop(): void;
   drain(): Promise<void>;
   status(): Promise<CompressionQueueStatus>;
 } {
   let stopped = false;
+  let started = false;
   let active = false;
   let completed = 0;
   let failures = 0;
@@ -77,7 +79,7 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
   }
 
   function schedule(ms: number): void {
-    if (stopped) return;
+    if (stopped || !started) return;
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = undefined;
@@ -87,7 +89,7 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
   }
 
   function wake(): void {
-    if (!stopped && !active) schedule(0);
+    if (!stopped && started && !active) schedule(0);
   }
 
   async function recoverFromObservations(): Promise<void> {
@@ -162,7 +164,7 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
       logger.warn("Compression queue pass failed", { error: lastError });
     } finally {
       active = false;
-      if (!stopped) {
+      if (!stopped && started) {
         try {
           const jobs = await kv.list<CompressionQueueJob>(KV.compressionQueue);
           const due = jobs.filter((j) => j && j.status !== "exhausted")
@@ -193,9 +195,8 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
   sdk.registerFunction("mem::compression-enqueue", enqueue);
   sdk.registerFunction("mem::compression-queue-status", status);
 
-  // Wake on new work, scheduled retry deadlines, and slow recovery sweeps, not a health-poll loop.
-  schedule(0);
   return {
+    start: () => { if (!started && !stopped) { started = true; schedule(0); } },
     stop: () => { stopped = true; if (timer) clearTimeout(timer); },
     drain,
     status,
