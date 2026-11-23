@@ -405,6 +405,10 @@ def migrate() -> int:
         "loaded": was_loaded,
     }, indent=2) + "\n")
     log(f"All configuration and databases backed up: {backup_dir}")
+    legacy_cli = HOME / ".local" / "bin" / "agentmemory-proxy"
+    legacy_cli_target = os.readlink(legacy_cli) if legacy_cli.is_symlink() else None
+    retired_checkout = backup_dir / "agentmemory-proxy-retired"
+    retired_app = backup_dir / "AgentMemory Control.app"
     changed = False
     try:
         if not env.get("OPENAI_MODEL"):
@@ -463,7 +467,6 @@ def migrate() -> int:
         bootout(PROXY_LABEL, PROXY_PLIST)
         check_queue_file(queue_path)
         PROXY_PLIST.unlink()
-        legacy_cli = HOME / ".local" / "bin" / "agentmemory-proxy"
         if legacy_cli.is_symlink() and str(proxy_root) in str(legacy_cli.resolve()):
             legacy_cli.unlink()
         if OLD_APP.exists():
@@ -487,9 +490,8 @@ def migrate() -> int:
             log("Existing agentmemory CLI was left unchanged; no commands overwritten")
         expected = (HOME / "life" / "agentmemory-proxy").resolve()
         if proxy_root.resolve() == expected and (proxy_root / "pyproject.toml").is_file():
-            archive = backup_dir / "agentmemory-proxy-retired"
-            shutil.move(str(proxy_root), str(archive))
-            log(f"Old proxy repository retired to archive: {archive}")
+            shutil.move(str(proxy_root), str(retired_checkout))
+            log(f"Old proxy repository retired to archive: {retired_checkout}")
         else:
             log(f"Unrecognized proxy checkout left unchanged: {proxy_root}")
         log("SUCCESS: old proxy service removed, fork active, Codex routes directly to :3111")
@@ -500,6 +502,18 @@ def migrate() -> int:
     except BaseException:
         if changed:
             log("Migration interrupted; restoring previous configuration and services")
+            # Restore legacy executable locations BEFORE relaunching launchd.
+            # A failure after moving the checkout must never strand rollback.
+            try:
+                if retired_checkout.exists() and not proxy_root.exists():
+                    shutil.move(str(retired_checkout), str(proxy_root))
+                if retired_app.exists() and not OLD_APP.exists():
+                    shutil.move(str(retired_app), str(OLD_APP))
+                if legacy_cli_target and not legacy_cli.exists() and not legacy_cli.is_symlink():
+                    legacy_cli.parent.mkdir(parents=True, exist_ok=True)
+                    legacy_cli.symlink_to(legacy_cli_target)
+            except OSError as exc:
+                log(f"WARNING: legacy executable restore incomplete: {exc}")
             try:
                 bootout(MEMORY_LABEL, MEMORY_PLIST)
                 run(node, ROOT / "dist" / "cli.mjs", "stop", check=False, timeout=40)
