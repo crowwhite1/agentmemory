@@ -21,4 +21,16 @@ export function registerCompressionApi(sdk: IIIClient, secret?: string): void {
   };
   sdk.registerFunction("api::compression-status", handler(false));
   sdk.registerFunction("api::compression-retry", handler(true));
+  sdk.registerFunction("api::compression-queue-status", async (req: HttpRequest) => {
+    const denied = checkAuth(req, secret);
+    if (denied) return denied;
+    try {
+      return {
+        status_code: 200,
+        body: await sdk.trigger({ function_id: "mem::compression-queue-status", payload: {} }),
+      };
+    } catch {
+      return { status_code: 503, body: { error: "compression_queue_unavailable" } };
+    }
+  });
 }

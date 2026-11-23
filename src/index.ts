@@ -47,6 +47,8 @@ import { registerVisionSearchFunctions } from "./functions/vision-search.js";
 import { registerSlotsFunctions, isSlotsEnabled, isReflectEnabled } from "./functions/slots.js";
 import { registerDiskSizeManager } from "./functions/disk-size-manager.js";
 import { registerCompressFunction } from "./functions/compress.js";
+import { registerCompressionQueue } from "./functions/compression-queue.js";
+import { SerializedMemoryProvider } from "./providers/serialized.js";
 import {
   registerSearchFunction,
   backfillVectorBacklog,
@@ -211,10 +213,15 @@ async function main() {
   const embeddingConfig = loadEmbeddingConfig();
   const fallbackConfig = loadFallbackConfig();
 
-  const provider =
+  const baseProvider =
     fallbackConfig.providers.length > 0 && config.provider.provider !== "noop"
       ? createFallbackProvider(config.provider, fallbackConfig)
       : createProvider(config.provider);
+  // A single gate prevents independent summary, compression and graph requests
+  // from flooding a slow local model. Cloud users can explicitly opt out.
+  const provider = process.env["AGENTMEMORY_LLM_SERIALIZE"] === "false"
+    ? baseProvider
+    : new SerializedMemoryProvider(baseProvider);
 
   const embeddingProvider = createEmbeddingProvider();
   const imageEmbeddingProvider = createImageEmbeddingProvider();
@@ -306,6 +313,7 @@ async function main() {
   }
   registerDiskSizeManager(sdk, kv);
   registerCompressFunction(sdk, kv, provider, metricsStore);
+  const compressionQueue = registerCompressionQueue(sdk, kv);
   registerSearchFunction(sdk, kv);
   registerContextFunction(sdk, kv, config.tokenBudget);
   registerSessionIndexMaintenanceFunction(sdk, kv);
@@ -650,6 +658,8 @@ async function main() {
     `MCP surface (opt-in via \`npx @agentmemory/mcp\`): ${getAllTools().length} tools · 6 resources · 3 prompts`,
   );
 
+  compressionQueue.start();
+
   void (async () => {
     try {
       const drained = await capture.drainLocalSpool();
@@ -817,6 +827,7 @@ async function main() {
     healthMonitor.stop();
     dedupMap.stop();
     capture.stop();
+    compressionQueue.stop();
     stopKeywordRebuildRetry();
     clearInterval(sessionFinalizeTimer);
     await settleWithin(graphIndexMigration.stop(), SHUTDOWN_FLUSH_TIMEOUT_MS);

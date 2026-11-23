@@ -23,7 +23,7 @@ import { saveImageToDisk } from "../utils/image-store.js";
 import { withoutObservationSource } from "./observation-source.js";
 import { budgetLiveObservationSource } from "./observation-source-budget.js";
 import { observationEmbedText } from "../state/memory-utils.js";
-import { compressionRaw, markCompressionDispatchFailed, pendingCompression } from "./compression-state.js";
+import { compressionRaw, pendingCompression } from "./compression-state.js";
 import { requestSummaryRefresh } from "./summary-state.js";
 import { scheduleSessionFinalize } from "./session-finalize.js";
 
@@ -511,12 +511,15 @@ export function registerObserveFunction(
           afterKeyedLock(`obs:${payload.sessionId}`, async () => {
             try {
               await sdk.trigger({
-                function_id: "mem::compress",
+                function_id: "mem::compression-enqueue",
                 payload: { observationId: obsId, sessionId: payload.sessionId },
-                action: TriggerAction.Void(),
               });
-            } catch {
-              await markCompressionDispatchFailed(kv, synthetic);
+            } catch (error) {
+              logger.warn("Compression enqueue deferred until recovery scan", {
+                sessionId: payload.sessionId,
+                obsId,
+                error: error instanceof Error ? error.message : String(error),
+              });
             }
           });
         }

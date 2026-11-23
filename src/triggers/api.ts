@@ -1010,6 +1010,14 @@ export function registerApiTriggers(
       api_path: "/agentmemory/compression/retry",
     },
   });
+  sdk.registerTrigger({
+    type: "http",
+    function_id: "api::compression-queue-status",
+    config: {
+      http_method: "GET",
+      api_path: "/agentmemory/compression/queue",
+    },
+  });
 
   sdk.registerFunction("api::compress-file", 
     async (req: HttpRequest<{ filePath: string }>): Promise<Response> => {
