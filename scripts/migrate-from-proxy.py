@@ -417,18 +417,20 @@ def migrate() -> int:
             CODEX_TOML.read_text() if CODEX_TOML.is_file() else "", npx
         )
         new_hooks = update_hooks(CODEX_HOOKS.read_text()) if CODEX_HOOKS.is_file() else None
-        changed = True
-        write_atomic(ENV_PATH, new_env)
-        write_atomic(CODEX_TOML, new_codex)
-        if new_hooks is not None:
-            write_atomic(CODEX_HOOKS, new_hooks)
         check_old_proxy()
-        # Detach previous managed launchd before stopping the detached iii worker.
+        # Stop with the LEGACY environment still intact. The CLI uses
+        # AGENTMEMORY_DATA_DIR to find Compose ownership metadata; replacing
+        # it before stopping makes the old engine undiscoverable.
+        changed = True
         bootout(MEMORY_LABEL, MEMORY_PLIST)
         stopped = run(node, ROOT / "dist" / "cli.mjs", "stop", check=False, timeout=45)
         if stopped.returncode:
             raise MigrationError("Could not stop old iii worker cleanly: " + stopped.stderr[-700:])
         wait_old_worker_stopped()
+        write_atomic(ENV_PATH, new_env)
+        write_atomic(CODEX_TOML, new_codex)
+        if new_hooks is not None:
+            write_atomic(CODEX_HOOKS, new_hooks)
         if relocate_data:
             if not previous_data.is_dir():
                 raise MigrationError(f"Previous AgentMemory data directory disappeared: {previous_data}")
