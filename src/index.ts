@@ -47,6 +47,7 @@ import { registerVisionSearchFunctions } from "./functions/vision-search.js";
 import { registerSlotsFunctions, isSlotsEnabled, isReflectEnabled } from "./functions/slots.js";
 import { registerDiskSizeManager } from "./functions/disk-size-manager.js";
 import { registerCompressFunction } from "./functions/compress.js";
+import { registerCompressionQueue } from "./functions/compression-queue.js";
 import {
   registerSearchFunction,
   backfillVectorBacklog,
@@ -306,6 +307,7 @@ async function main() {
   }
   registerDiskSizeManager(sdk, kv);
   registerCompressFunction(sdk, kv, provider, metricsStore);
+  const compressionQueue = registerCompressionQueue(sdk, kv);
   registerSearchFunction(sdk, kv);
   registerContextFunction(sdk, kv, config.tokenBudget);
   registerSessionIndexMaintenanceFunction(sdk, kv);
@@ -817,6 +819,7 @@ async function main() {
     healthMonitor.stop();
     dedupMap.stop();
     capture.stop();
+    compressionQueue.stop();
     stopKeywordRebuildRetry();
     clearInterval(sessionFinalizeTimer);
     await settleWithin(graphIndexMigration.stop(), SHUTDOWN_FLUSH_TIMEOUT_MS);
