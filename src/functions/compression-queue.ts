@@ -29,9 +29,14 @@ export type CompressionQueueStatus = {
 type CompressionResult = { success?: boolean; skipped?: boolean; retryable?: boolean; error?: string };
 type CompressionIdentity = { sessionId: string; observationId: string };
 
-const BACKFILL_MS = 300_000;
 const JOB_BATCH = 64;
-const MAX_ATTEMPTS = 2;
+
+function boundedInt(key: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[key];
+  if (!raw || !/^\\d+$/.test(raw)) return fallback;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n >= min && n <= max ? n : fallback;
+}
 
 export function compressionQueueKey(sessionId: string, observationId: string): string {
   return fingerprintId("compression-job", JSON.stringify([sessionId, observationId]));
@@ -47,6 +52,8 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
   let completed = 0;
   let failures = 0;
   let lastError: string | undefined;
+  const backfillMs = boundedInt("AGENTMEMORY_COMPRESSION_QUEUE_BACKFILL_MS", 300_000, 30_000, 86_400_000);
+  const maxAttempts = boundedInt("AGENTMEMORY_COMPRESSION_QUEUE_MAX_ATTEMPTS", 2, 1, 20);
   let backfillAt = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -105,7 +112,7 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
     try {
       const now = Date.now();
       if (now >= backfillAt) {
-        backfillAt = now + BACKFILL_MS;
+        backfillAt = now + backfillMs;
         await recoverFromObservations();
       }
       const jobs = await kv.list<CompressionQueueJob>(KV.compressionQueue);
@@ -142,7 +149,7 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
       } else {
         failures++;
         lastError = result?.error || "compression_failed";
-        const exhausted = claimed.attempts >= MAX_ATTEMPTS;
+        const exhausted = claimed.attempts >= maxAttempts;
         const retryDelay = Math.min(300_000, 15_000 * 2 ** Math.min(claimed.attempts - 1, 5));
         await kv.set(KV.compressionQueue, job.id, {
           ...claimed, status: exhausted ? "exhausted" : "pending",
@@ -162,7 +169,7 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
             .reduce((min, j) => Math.min(min, j.dueAt), backfillAt);
           schedule(Math.max(0, due - Date.now()));
         } catch {
-          schedule(BACKFILL_MS);
+          schedule(backfillMs);
         }
       }
     }
