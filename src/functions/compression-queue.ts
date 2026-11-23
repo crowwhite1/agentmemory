@@ -2,29 +2,8 @@ import type { IIIClient } from "iii-sdk";
 import { KV, fingerprintId } from "../state/schema.js";
 import type { StateKV } from "../state/kv.js";
 import { observationRevision, needsCompression, compressionRaw, type StoredObservation } from "./compression-state.js";
-import type { Session } from "../types.js";
+import type { Session, CompressionQueueJob, CompressionQueueStatus } from "../types.js";
 import { logger } from "../logger.js";
-
-export type CompressionQueueJob = {
-  id: string;
-  sessionId: string;
-  observationId: string;
-  enqueuedAt: number;
-  dueAt: number;
-  attempts: number;
-  status: "pending" | "running" | "exhausted";
-  lastError?: string;
-};
-
-export type CompressionQueueStatus = {
-  pending: number;
-  running: number;
-  exhausted: number;
-  oldestPendingAgeMs: number | null;
-  completedSinceStart: number;
-  failuresSinceStart: number;
-  lastError?: string;
-};
 
 type CompressionResult = { success?: boolean; skipped?: boolean; retryable?: boolean; error?: string };
 type CompressionIdentity = { sessionId: string; observationId: string };
