@@ -12,7 +12,7 @@ const JOB_BATCH = 64;
 
 function boundedInt(key: string, fallback: number, min: number, max: number): number {
   const raw = process.env[key];
-  if (!raw || !/^\\d+$/.test(raw)) return fallback;
+  if (!raw || !/^\d+$/.test(raw)) return fallback;
   const n = Number(raw);
   return Number.isSafeInteger(n) && n >= min && n <= max ? n : fallback;
 }
