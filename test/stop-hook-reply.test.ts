@@ -87,6 +87,10 @@ async function startDaemon(
   registerObserveFunction(sdk as never, kv as never);
   registerCaptureFunctions(sdk as never, kv as never, { durableAfterMs: 0 });
   registerCompressFunction(sdk as never, kv as never, llm);
+  // The packaged hook test covers recall after compression. The queue
+  // itself has separate durable worker tests.
+  sdk.registerFunction("mem::compression-enqueue", async (identity: any) =>
+    sdk.trigger("mem::compress", identity));
   registerSummarizeFunction(sdk as never, kv as never, llm);
   registerSearchFunction(sdk as never, kv as never);
   registerApiTriggers(sdk as never, kv as never);
