@@ -11,6 +11,7 @@ function fixtureRoot(withEnvExample: boolean): string {
   roots.push(root);
   mkdirSync(join(root, "src", "viewer"), { recursive: true });
   writeFileSync(join(root, "src", "viewer", "index.html"), "<html></html>");
+  writeFileSync(join(root, "src", "viewer", "settings.html"), "<html>settings</html>");
   writeFileSync(join(root, "src", "viewer", "favicon.svg"), "<svg/>");
   if (withEnvExample) writeFileSync(join(root, ".env.example"), "# example\n");
   mkdirSync(join(root, "dist"), { recursive: true });
@@ -34,6 +35,7 @@ describe("build asset copy", () => {
     expect(copyAssets(root).status).toBe(0);
     expect(readFileSync(join(root, "dist", "viewer", "index.html"), "utf-8")).toBe("<html></html>");
     expect(existsSync(join(root, "dist", "viewer", "favicon.svg"))).toBe(true);
+    expect(readFileSync(join(root, "dist", "viewer", "settings.html"), "utf-8")).toBe("<html>settings</html>");
     expect(existsSync(join(root, "dist", ".env.example"))).toBe(true);
     for (const stale of ["iii-config.yaml", "iii-config.docker.yaml", "docker-compose.yml"]) {
       expect(existsSync(join(root, "dist", stale))).toBe(false);

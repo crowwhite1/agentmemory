@@ -48,13 +48,18 @@ function rig(provider: MemoryProvider = { name: "test", compress: vi.fn(async ()
   };
   registerCompressFunction(sdk as never, kv as never, provider);
   registerObserveFunction(sdk as never, kv as never);
+  // This suite isolates compression/recovery, not the scheduler itself.
+  // Preserve its asynchronous compression dispatch; queue behavior has
+  // dedicated tests in compression-queue.test.ts.
+  sdk.registerFunction("mem::compression-enqueue", async (identity: any) =>
+    sdk.trigger({ function_id: "mem::compress", payload: identity, action: { type: "void" } }));
   registerCompressionApi(sdk as never, "test-auth");
   const call = (id: string, input: any) => handlers.get(id)!(input);
   const seed = async (id = "obs-recovery", sessionId = "session-recovery", project = "project-a", agentId = "agent-a") => {
     await kv.set(KV.sessions, sessionId, { id: sessionId, project, agentId, observationCount: 1, status: "active", startedAt: raw().timestamp });
     await kv.set(KV.observations(sessionId), id, raw(id, sessionId));
   };
-  return { kv, sdk, provider, call, seed, flush: () => Promise.all(pending.splice(0)) };
+  return { kv, sdk, provider, call, seed, flush: async () => { await new Promise((resolve) => setImmediate(resolve)); await Promise.all(pending.splice(0)); } };
 }
 beforeEach(() => { getSearchIndex().clear(); setEmbeddingProvider(null); setVectorIndex(null); vi.stubEnv("AGENTMEMORY_AUTO_COMPRESS", "true"); });
 afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers(); setEmbeddingProvider(null); setVectorIndex(null); });

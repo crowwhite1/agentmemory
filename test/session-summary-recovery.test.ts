@@ -63,6 +63,11 @@ function rig(model = provider(), kv = store()) {
   registerObserveFunction(sdk as never, kv as never);
   const capture = registerCaptureFunctions(sdk as never, kv as never, { durableAfterMs: 0 });
   registerCompressFunction(sdk as never, kv as never, model);
+  // Legacy summary-repair tests intentionally exercise the compression
+  // lifecycle. Keep dispatch asynchronous; queue persistence is tested
+  // independently by compression-queue.test.ts.
+  sdk.registerFunction("mem::compression-enqueue", async (identity: any) =>
+    sdk.trigger({ function_id: "mem::compress", payload: identity, action: { type: "void" } }));
   registerSummarizeFunction(sdk as never, kv as never, model);
   registerSessionFinalizeFunction(sdk as never, kv as never);
   registerRememberFunction(sdk as never, kv as never);
@@ -84,7 +89,10 @@ function rig(model = provider(), kv = store()) {
     timestamp: new Date().toISOString(), data: { tool_name: "Read", tool_output: text },
   } });
   const sessions = () => call("api::sessions", { headers: {}, query_params: { agentId: "*" } });
-  const flush = async () => { while (pending.size) await Promise.allSettled([...pending]); };
+  const flush = async () => {
+    await new Promise((resolve) => setImmediate(resolve));
+    while (pending.size) await Promise.allSettled([...pending]);
+  };
   return { kv, sdk, call, model, observe, sessions, flush, close: capture.stop };
 }
 

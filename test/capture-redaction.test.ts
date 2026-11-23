@@ -168,7 +168,7 @@ describe("direct observation redaction", () => {
     const events: unknown[] = [];
     const unsubscribe = onLiveEvent((event) => events.push(event));
     const compress = vi.fn(async (_data: unknown) => null);
-    sdk.registerFunction("mem::compress", compress);
+    sdk.registerFunction("mem::compression-enqueue", compress);
     registerObserveFunction(sdk as never, kv as never);
     const input = payload(data);
     const before = JSON.stringify(input);

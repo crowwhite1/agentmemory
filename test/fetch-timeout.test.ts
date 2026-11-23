@@ -577,12 +577,12 @@ describe("OpenAIProvider thinking-model fallback", () => {
     },
   );
 
-  it("returns nonempty content even when the reply hit max_tokens", async () => {
+  it("rejects incomplete content when the reply hit max_tokens", async () => {
     mockOpenAIResponse({
       choices: [{ finish_reason: "length", message: { content: "partial but real", reasoning: "ignore" } }],
     });
     const provider = new OpenAIProvider("test-key", "gpt-5.6-luna", 16);
-    expect(await provider.compress("system", "user")).toBe("partial but real");
+    await expect(provider.compress("system", "user")).rejects.toThrow(/incomplete/);
   });
 
   it("content wins over both reasoning fields when present", async () => {
