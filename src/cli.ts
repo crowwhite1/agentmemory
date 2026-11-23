@@ -229,7 +229,7 @@ Commands:
                      --serve boots the server, runs the demo, and stops it
                      in one command (no second terminal).
   upgrade            Upgrade local deps + iii runtime (best effort)
-  stop [--force]     Stop the running iii-engine started by this CLI.
+  start              Start AgentMemory via the local built fork\n  restart            Stop and start AgentMemory with the same data\n  stop [--force]     Stop the running iii-engine started by this CLI.
                      --force bypasses the native engine PID identity guard
                      (use when the engine was started natively but state file is missing).
   mcp                Start standalone MCP shim — opt-in surface for MCP-only clients
@@ -3786,6 +3786,11 @@ async function runGraphIndex(): Promise<void> {
   process.exit(await runGraphIndexCommand({ base, args: args.slice(1), secret: resolveClientSecret(base) }));
 }
 
+async function restartServer(): Promise<void> {
+  await runStop();
+  await main();
+}
+
 const commands: Record<string, () => Promise<void>> = {
   init: runInit,
   connect: runConnectCmd,
@@ -3794,6 +3799,8 @@ const commands: Record<string, () => Promise<void>> = {
   doctor: runDoctor,
   demo: runDemo,
   upgrade: runUpgrade,
+  start: main,
+  restart: restartServer,
   stop: runStop,
   remove: runRemove,
   mcp: runMcp,
