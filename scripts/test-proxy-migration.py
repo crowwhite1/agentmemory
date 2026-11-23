@@ -32,6 +32,26 @@ class MigrationConfigTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             migration.update_codex_toml("[missing\n", "npx")
 
+    def test_preserves_legacy_workdir_state_location(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            old = Path(folder)
+            (old / "data").mkdir()
+            (old / "data" / "state_store.db").touch()
+            resolved = migration.prior_data_directory(old, {})
+            self.assertEqual(resolved, old / "data")
+            self.assertTrue(migration.under_path(resolved, old))
+
+    def test_explicit_absolute_state_location_has_precedence(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            old = Path(folder)
+            external = old.parent / "a-separate-agentmemory-state"
+            self.assertEqual(
+                migration.prior_data_directory(old, {"AGENTMEMORY_DATA_DIR": str(external)}),
+                external,
+            )
+
     def test_hooks_change_only_agentmemory_commands(self):
         original = '{"hooks": [{"command": "AGENTMEMORY_URL=http://127.0.0.1:3112 npx agentmemory"}, {"command": "curl http://127.0.0.1:3112"}]}'
         result = migration.update_hooks(original)
