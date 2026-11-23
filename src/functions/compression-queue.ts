@@ -90,6 +90,7 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
   async function drain(): Promise<void> {
     if (stopped || active) return;
     active = true;
+    let failedPass = false;
     try {
       const now = Date.now();
       if (now >= backfillAt) {
@@ -139,6 +140,7 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
         } satisfies CompressionQueueJob);
       }
     } catch (error) {
+      failedPass = true;
       lastError = error instanceof Error ? error.message : "queue_processing_failed";
       logger.warn("Compression queue pass failed", { error: lastError });
     } finally {
@@ -148,7 +150,7 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
           const jobs = await kv.list<CompressionQueueJob>(KV.compressionQueue);
           const due = jobs.filter((j) => j && j.status !== "exhausted")
             .reduce((min, j) => Math.min(min, j.dueAt), backfillAt);
-          schedule(Math.max(0, due - Date.now()));
+          schedule(Math.max(failedPass ? 10_000 : 0, due - Date.now()));
         } catch {
           schedule(backfillMs);
         }
