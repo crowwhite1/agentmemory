@@ -6,7 +6,7 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("binary-safe compression prompts", () => {
   it("removes screenshot JPEG Base64 before token truncation", () => {
-    const binary = "/9j/" + "QSkZJRgABAQA" .repeat(400);
+    const binary = "/9j/" + "QSkZJRgABAQA".repeat(400);
     const prompt = buildCompressionPrompt({
       hookType: "post_tool_use", timestamp: "2026-11-23",
       toolOutput: { screenshot: binary, action: "Raise", result: "accessibility state unchanged" },
