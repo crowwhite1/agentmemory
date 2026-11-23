@@ -396,10 +396,13 @@ def migrate() -> int:
             f"Cannot merge state directories {previous_data} and {next_data}; "
             "the target is not empty. No service has been changed."
         )
-    if previous_data.is_dir():
-        state_file = previous_data / "state_store.db"
-        if state_file.is_file():
-            snapshot_sqlite(state_file, backup_dir / "active-previous-state.sqlite")
+    state_file = previous_data / "state_store.db"
+    if not state_file.is_file():
+        raise MigrationError(
+            f"Cannot locate the legacy AgentMemory state database at {state_file}. "
+            "Refusing to cut over without a verified memory backup."
+        )
+    snapshot_sqlite(state_file, backup_dir / "active-previous-state.sqlite")
     proxy_env_path = proxy_root / ".env"
     proxy_env = env_values(proxy_env_path.read_text() if proxy_env_path.is_file() else "")
     queue_path = Path(proxy_env.get("QUEUE_DB_PATH") or "queue.db").expanduser()
