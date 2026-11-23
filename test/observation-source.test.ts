@@ -75,6 +75,7 @@ function rig() {
       sessionId: "source-session", project: "source-test", cwd: "/test/project",
       timestamp: "2026-09-30T00:00:00Z", hookType, data,
     });
+    await new Promise((resolve) => setImmediate(resolve));
     await Promise.all(pendingCompression.splice(0));
     return kv.get(KV.observations("source-session"), result.observationId) as Promise<CompressedObservation>;
   };
