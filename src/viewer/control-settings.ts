@@ -112,19 +112,17 @@ export function updateSettings(changes: Record<string, unknown>): string[] {
   const original = envFileContent();
   const lines = original.split(/\r?\n/);
   const updated = new Set<string>();
-  const next = lines.filter((line) => {
+  const next = lines.flatMap((line) => {
     const found = /^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=/.exec(line);
-    if (!found || !(found[1]! in changes)) return true;
+    if (!found || !(found[1]! in changes)) return [line];
     const key = found[1]!;
-    if (updated.has(key)) return false;
+    if (updated.has(key)) return [];
     updated.add(key);
     const value = changes[key] as string;
-    if (!value) return false;
-    line = `${key}=${value}`;
-    return false;
+    return value ? [`${key}=${value}`] : [];
   });
   for (const [key, value] of entries) {
-    if (value !== "") next.push(`${key}=${value}`);
+    if (!updated.has(key) && value !== "") next.push(`${key}=${value}`);
   }
   const out = next.join("\n").replace(/\n*$/, "\n");
   const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
@@ -139,7 +137,9 @@ export function updateSettings(changes: Record<string, unknown>): string[] {
 }
 
 export function renderSettingsDocument(): { html: string; csp: string } {
-  const content = readFileSync(rootCandidates("viewer/settings.html").find(existsSync)!, "utf8");
+  const path = rootCandidates("viewer/settings.html").find(existsSync);
+  if (!path) throw new Error("Bundled settings.html is missing");
+  const content = readFileSync(path, "utf8");
   const nonce = createViewerNonce();
   return { html: content.replaceAll(VIEWER_NONCE_PLACEHOLDER, nonce), csp: buildViewerCsp(nonce) };
 }
