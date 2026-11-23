@@ -59,7 +59,7 @@ function rig(provider: MemoryProvider = { name: "test", compress: vi.fn(async ()
     await kv.set(KV.sessions, sessionId, { id: sessionId, project, agentId, observationCount: 1, status: "active", startedAt: raw().timestamp });
     await kv.set(KV.observations(sessionId), id, raw(id, sessionId));
   };
-  return { kv, sdk, provider, call, seed, flush: () => Promise.all(pending.splice(0)) };
+  return { kv, sdk, provider, call, seed, flush: async () => { await new Promise((resolve) => setImmediate(resolve)); await Promise.all(pending.splice(0)); } };
 }
 beforeEach(() => { getSearchIndex().clear(); setEmbeddingProvider(null); setVectorIndex(null); vi.stubEnv("AGENTMEMORY_AUTO_COMPRESS", "true"); });
 afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers(); setEmbeddingProvider(null); setVectorIndex(null); });
