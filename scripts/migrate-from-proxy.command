@@ -16,4 +16,5 @@ fi
 echo "[agentmemory-migrate] Building fork and running tests before modifying services..."
 npm ci
 npm test
+python3 scripts/test-proxy-migration.py
 exec python3 scripts/migrate-from-proxy.py
