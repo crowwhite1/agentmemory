@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Настройки AgentMemory</title>
+<style>
+:root{color-scheme:dark;--bg:#121316;--panel:#1a1d25;--border:#343947;--text:#f0f1f5;--muted:#a3acc0;--accent:#7b78ec}
+*{box-sizing:border-box}body{background:var(--bg);color:var(--text);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;padding:30px 18px}
+main{max-width:1020px;margin:0 auto}header{display:flex;align-items:center;justify-content:space-between;gap:15px;flex-wrap:wrap;margin-bottom:25px}h1{font-size:27px;margin:0}h2{font-size:19px;margin:0 0 12px}p{color:var(--muted);margin:6px 0}a{color:#aba8ff;text-decoration:none}a:hover{text-decoration:underline}
+.top{background:var(--panel);border:1px solid var(--border);border-radius:13px;padding:17px;margin:18px 0}
+.toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+input,button{font:inherit}input[type="search"],input[type="text"],input[type="password"]{background:#11141c;border:1px solid #465066;color:var(--text);border-radius:9px;padding:10px 12px;width:100%;min-width:0}
+input:focus{outline:2px solid var(--accent);outline-offset:1px}
+button{border:1px solid #5b6380;color:var(--text);background:#313b52;border-radius:8px;cursor:pointer;padding:10px 15px}button.primary{background:#6864dd;border-color:#6864dd}button:disabled{opacity:.5;cursor:default}
+#search{flex:1;min-width:230px}.section{padding:22px 24px;background:var(--panel);border:1px solid var(--border);border-radius:13px;margin:18px 0}
+.field{display:grid;grid-template-columns:minmax(200px,1fr) minmax(210px,300px);gap:18px;border-top:1px solid var(--border);padding:15px 0;align-items:center}
+.field:first-of-type{border-top:0}.field label{font-size:13px;font-weight:650;word-break:break-word}.field small{display:block;color:var(--muted);line-height:1.45;margin-top:5px}
+.field .value{min-width:0}.field input{font-family:ui-monospace,SFMono-Regular,monospace}
+.badge{display:inline-block;margin-top:6px;font-size:11px;color:#e4d79e}.secret{color:#a2d5ad}
+#notice{min-height:20px}.footer{position:sticky;bottom:0;padding:13px;border:1px solid var(--border);border-radius:12px;background:rgba(30,32,40,.96);display:flex;align-items:center;gap:15px;flex-wrap:wrap}
+@media(max-width:650px){.field{grid-template-columns:1fr}.section{padding:16px}.footer{position:static}}
+</style>
+</head>
+<body>
+<main>
+<header><div><h1>Настройки AgentMemory</h1><p>Единая конфигурация без ручного редактирования .env</p></div>
+<a href="/viewer">← Вернуться в Viewer</a></header>
+<div class="top"><p><strong>Модель:</strong> параметры поставщика LLM можно изменять, не меняя приложение или сохранённые observations.</p>
+<p>Изменения записываются локально в <code>~/.agentmemory/.env</code> (или заданный AGENTMEMORY_ENV_FILE). <strong>Они вступят в силу после перезапуска AgentMemory.</strong> Текущие LLM-запросы не прерываются.</p>
+<p>Секреты не отображаются в интерфейсе и никогда не возвращаются API. Страница не опрашивает сервер по таймеру: данные загружаются при открытии и по нажатию «Обновить».</p></div>
+<div class="toolbar"><input type="search" id="search" placeholder="Поиск параметров и описаний…" aria-label="Поиск настроек"><button id="reload">Обновить</button><span id="count"></span></div>
+<div id="settings" aria-live="polite">Загрузка…</div>
+<div class="footer"><button id="save" class="primary" disabled>Сохранить изменения</button><span id="notice" role="status">Изменений нет</span></div>
+</main>
+<script nonce="__AGENTMEMORY_VIEWER_NONCE__">
+(() => {
+  "use strict";
+  const el=(id)=>document.getElementById(id);
+  const dirty=new Map();
+  let catalog=[];
+  const catTranslations={
+    "LLM provider: off unless you choose one":"LLM и локальная модель",
+    "Embedding provider: off unless you set EMBEDDING_PROVIDER":"Эмбеддинги",
+    "Auth & security":"Авторизация и безопасность",
+    "Search tuning":"Поиск и качество памяти",
+    "Behaviour flags":"Поведение AgentMemory",
+    "CLI / runtime knobs":"CLI и фоновые процессы",
+    "Ports":"Порты",
+    "iii engine pin":"iii-engine",
+    "Session sweep":"Завершение сессий",
+    "Claude Code bridge (opt-in)":"Интеграция Claude Code",
+    "Obsidian export (opt-in)":"Экспорт Obsidian"
+  };
+  const setting=(key)=>catalog.find(x=>x.key===key);
+  async function load() {
+    el("settings").textContent="Загрузка…";
+    try{
+      const r=await fetch("/settings/api",{cache:"no-store"});
+      if(!r.ok)throw new Error("HTTP "+r.status);
+      const body=await r.json();
+      catalog=body.settings||[];
+      dirty.clear();
+      render();
+      el("notice").textContent="Изменений нет";
+    }catch(error){el("settings").textContent="Не удалось загрузить настройки: "+error.message;}
+  }
+  function changed(key,value) {
+    const item=setting(key);if(!item)return;
+    if(value===(item.value||"") && !item.secret)dirty.delete(key);
+    else if(item.secret && value==="")dirty.delete(key);
+    else dirty.set(key,value);
+    el("save").disabled=dirty.size===0;
+    el("notice").textContent=dirty.size?("Несохранённых изменений: "+dirty.size):"Изменений нет";
+  }
+  function render(){
+    const needle=el("search").value.toLowerCase().trim();
+    const matches=catalog.filter(x=>!needle||[x.key,x.description,x.group].join(" ").toLowerCase().includes(needle));
+    el("count").textContent=matches.length+" из "+catalog.length;
+    const area=el("settings");area.replaceChildren();
+    const groups=new Map();
+    for(const x of matches){if(!groups.has(x.group))groups.set(x.group,[]);groups.get(x.group).push(x);}
+    for(const [name,entries] of groups){
+      const section=document.createElement("section");section.className="section";
+      const heading=document.createElement("h2");heading.textContent=catTranslations[name]||name;section.append(heading);
+      for(const x of entries){
+        const line=document.createElement("div");line.className="field";
+        const meta=document.createElement("div"),label=document.createElement("label");
+        label.textContent=x.key;label.htmlFor="setting-"+x.key;meta.append(label);
+        const desc=document.createElement("small");desc.textContent=x.description;meta.append(desc);
+        if(x.environmentOverride){const b=document.createElement("span");b.className="badge";b.textContent="Перекрыто внешней переменной процесса";meta.append(b);}
+        const wrapper=document.createElement("div");wrapper.className="value";
+        const input=document.createElement("input");input.id="setting-"+x.key;input.type=x.secret?"password":"text";
+        input.autocomplete="off";input.spellcheck=false;
+        input.value=dirty.has(x.key)?dirty.get(x.key):x.value;
+        input.placeholder=x.secret?(x.configured?"Секрет задан • введите новый для замены":"Введите секрет"):(x.example||"Не задано");
+        input.addEventListener("input",()=>changed(x.key,input.value));
+        wrapper.append(input);line.append(meta,wrapper);section.append(line);
+      }
+      area.append(section);
+    }
+  }
+  async function save(){
+    if(!dirty.size)return;
+    const values=Object.fromEntries(dirty);
+    const button=el("save");button.disabled=true;el("notice").textContent="Сохранение…";
+    try{
+      const r=await fetch("/settings/api",{
+        method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({settings:values})
+      });
+      const body=await r.json().catch(()=>({}));
+      if(!r.ok)throw new Error(body.error||"HTTP "+r.status);
+      el("notice").textContent="Сохранено. Перезапусти AgentMemory, чтобы применить настройки.";
+      await load();
+      el("notice").textContent="Сохранено. Перезапусти AgentMemory, чтобы применить настройки.";
+    }catch(error){button.disabled=false;el("notice").textContent="Ошибка: "+error.message;}
+  }
+  el("search").addEventListener("input",render);
+  el("reload").addEventListener("click",load);
+  el("save").addEventListener("click",save);
+  load();
+})();
+</script>
+</body>
+</html>
