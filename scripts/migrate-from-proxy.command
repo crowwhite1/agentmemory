@@ -14,7 +14,20 @@ if [[ ! -f package-lock.json ]]; then
   exit 1
 fi
 echo "[agentmemory-migrate] Building fork and running tests before modifying services..."
+# macOS system python3 may be 3.9; this migration needs tomllib (3.11+).
+PYTHON=""
+for candidate in python3.12 python3.11 "$HOME/life/agentmemory-proxy/.venv/bin/python" python3; do
+  if command -v "$candidate" >/dev/null 2>&1 &&
+     "$candidate" -c 'import tomllib; import sys; assert sys.version_info >= (3, 11)' >/dev/null 2>&1; then
+    PYTHON="$candidate"
+    break
+  fi
+done
+if [[ -z "$PYTHON" ]]; then
+  echo "Python 3.11+ not found. Install it before attempting migration." >&2
+  exit 1
+fi
 npm ci
 npm test
-python3 scripts/test-proxy-migration.py
-exec python3 scripts/migrate-from-proxy.py
+"$PYTHON" scripts/test-proxy-migration.py
+exec "$PYTHON" scripts/migrate-from-proxy.py

@@ -184,6 +184,21 @@ def state_databases() -> list[Path]:
     return sorted(paths)
 
 
+def prior_data_directory(proxy_root: Path, values: dict[str, str]) -> Path:
+    explicit = values.get("AGENTMEMORY_DATA_DIR")
+    if explicit:
+        candidate = Path(explicit).expanduser()
+        return (candidate if candidate.is_absolute() else proxy_root / candidate).resolve()
+    legacy = (proxy_root / "data").resolve()
+    if (legacy / "state_store.db").is_file() or (legacy / "iii-config.yaml").is_file():
+        return legacy
+    return (HOME / "Library" / "Application Support" / "agentmemory").resolve()
+
+
+def under_path(child: Path, parent: Path) -> bool:
+    return child == parent or parent in child.parents
+
+
 def snapshot_sqlite(source: Path, backup: Path) -> None:
     backup.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=20) as src:
@@ -321,6 +336,21 @@ def migrate() -> int:
         snapshot_sqlite(path, backup_dir / f"state-{idx}.sqlite")
     old_service = plistlib.loads(PROXY_PLIST.read_bytes())
     proxy_root = Path(old_service.get("WorkingDirectory", str(HOME / "life" / "agentmemory-proxy")))
+    previous_data = prior_data_directory(proxy_root, env)
+    # If the old state lives under the proxy checkout, move a consistent copy
+    # out of that checkout *after stopping the old engine* and before new start.
+    relocate_data = under_path(previous_data, proxy_root.resolve())
+    next_data = ((HOME / "Library" / "Application Support" / "agentmemory").resolve()
+                 if relocate_data else previous_data)
+    if relocate_data and next_data.exists() and any(next_data.iterdir()):
+        raise MigrationError(
+            f"Cannot merge state directories {previous_data} and {next_data}; "
+            "the target is not empty. No service has been changed."
+        )
+    if previous_data.is_dir():
+        state_file = previous_data / "state_store.db"
+        if state_file.is_file():
+            snapshot_sqlite(state_file, backup_dir / "active-previous-state.sqlite")
     proxy_env_path = proxy_root / ".env"
     proxy_env = env_values(proxy_env_path.read_text() if proxy_env_path.is_file() else "")
     queue_path = Path(proxy_env.get("QUEUE_DB_PATH") or "queue.db").expanduser()
@@ -339,6 +369,7 @@ def migrate() -> int:
         "tracked": [str(path) for path in tracked],
         "existing": [str(path) for path, yes in zip(tracked, existed) if yes],
         "queue_path": str(queue_path), "proxy_root": str(proxy_root),
+        "previous_data_dir": str(previous_data), "new_data_dir": str(next_data),
         "loaded": was_loaded,
     }, indent=2) + "\n")
     log(f"All configuration and databases backed up: {backup_dir}")
@@ -347,7 +378,8 @@ def migrate() -> int:
         if not env.get("OPENAI_MODEL"):
             raise MigrationError("OPENAI_MODEL is missing; refusing to replace your Qwen model")
         values = {"OPENAI_BASE_URL": "http://127.0.0.1:1234/v1",
-                  "AGENTMEMORY_AUTO_COMPRESS": "true"}
+                  "AGENTMEMORY_AUTO_COMPRESS": "true",
+                  "AGENTMEMORY_DATA_DIR": str(next_data)}
         if not env.get("AGENTMEMORY_LLM_PROVIDER"):
             values["AGENTMEMORY_LLM_PROVIDER"] = "openai"
         new_env = update_env(env_text, values)
@@ -366,6 +398,11 @@ def migrate() -> int:
         stopped = run(node, ROOT / "dist" / "cli.mjs", "stop", check=False, timeout=45)
         if stopped.returncode:
             raise MigrationError("Could not stop old iii worker cleanly: " + stopped.stderr[-700:])
+        if relocate_data:
+            if not previous_data.is_dir():
+                raise MigrationError(f"Previous AgentMemory data directory disappeared: {previous_data}")
+            shutil.copytree(previous_data, next_data, dirs_exist_ok=True)
+            log(f"Copied existing memory state into permanent directory {next_data}")
         write_atomic(MEMORY_PLIST, native_plist(node), mode=0o644)
         bootstrap(MEMORY_LABEL, MEMORY_PLIST)
         wait_ready()
