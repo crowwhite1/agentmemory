@@ -94,26 +94,43 @@ def update_env(text: str, values: dict[str, str]) -> str:
 
 
 def update_codex_toml(text: str, npx: str) -> str:
-    if text.strip():
-        tomllib.loads(text)
-    if re.search(r"(?m)^\s*\[\[mcp_servers\.agentmemory", text):
+    parsed = tomllib.loads(text) if text.strip() else {}
+    if re.search(r"(?m)^\\s*\\[\\[mcp_servers\\.agentmemory", text):
         raise MigrationError("Unsupported Codex AgentMemory array-of-tables; leaving config unchanged")
+    servers = parsed.get("mcp_servers", {})
+    existing = servers.get("agentmemory", {}) if isinstance(servers, dict) else {}
+    if not isinstance(existing, dict):
+        raise MigrationError("Invalid Codex AgentMemory config; leaving unchanged")
+    extras = existing.get("env", {})
+    if not isinstance(extras, dict):
+        raise MigrationError("Invalid AgentMemory MCP environment")
+    env = {k: v for k, v in extras.items()
+           if isinstance(k, str) and isinstance(v, str)
+           and k not in ("AGENTMEMORY_URL", "AGENTMEMORY_FORCE_PROXY")}
+    env.update({"AGENTMEMORY_URL": MEMORY_URL, "AGENTMEMORY_FORCE_PROXY": "1"})
     kept: list[str] = []
-    for part in re.split(r"(?m)(?=^\[+[^\n]+\]+\s*$)", text):
-        hdr = re.match(r"\s*\[([^]]+)\]", part)
+    for part in re.split(r"(?m)(?=^\\[+[^\\n]+\\]+\\s*$)", text):
+        hdr = re.match(r"\\s*\\[([^]]+)\\]", part)
         if hdr and (hdr.group(1).strip() == "mcp_servers.agentmemory" or
                     hdr.group(1).strip().startswith("mcp_servers.agentmemory.")):
             continue
         kept.append(part)
-    prefix = "".join(kept).rstrip() + "\n\n"
-    updated = prefix + (
-        "[mcp_servers.agentmemory]\n"
-        f"command = {json.dumps(npx)}\n"
-        'args = ["-y", "@agentmemory/mcp"]\n\n'
-        "[mcp_servers.agentmemory.env]\n"
-        f'AGENTMEMORY_URL = "{MEMORY_URL}"\n'
-        'AGENTMEMORY_FORCE_PROXY = "1"\n'
-    )
+    prefix = "".join(kept).rstrip() + "\\n\\n"
+    lines = [
+        "[mcp_servers.agentmemory]",
+        f"command = {json.dumps(npx)}",
+        'args = ["-y", "@agentmemory/mcp"]',
+    ]
+    # Preserve existing AgentMemory-specific settings, except obsolete routing.
+    for key, value in existing.items():
+        if key in ("command", "args", "env"):
+            continue
+        if re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_-]*", key) and isinstance(value, (str, bool, int)):
+            encoded = json.dumps(value).lower() if isinstance(value, bool) else json.dumps(value)
+            lines.append(f"{key} = {encoded}")
+    lines.extend(["", "[mcp_servers.agentmemory.env]"])
+    lines.extend(f"{key} = {json.dumps(value)}" for key, value in env.items())
+    updated = prefix + "\\n".join(lines) + "\\n"
     tomllib.loads(updated)
     return updated
 
