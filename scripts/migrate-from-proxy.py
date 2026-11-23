@@ -281,6 +281,36 @@ def wait_ready(timeout: int = 90) -> None:
     raise MigrationError("New AgentMemory did not become ready on port 3111")
 
 
+def wait_old_worker_stopped(timeout: int = 25) -> None:
+    until = time.monotonic() + timeout
+    while time.monotonic() < until:
+        try:
+            get_json(f"{MEMORY_URL}/agentmemory/livez", timeout=2)
+        except (OSError, ValueError):
+            return
+        time.sleep(1)
+    raise MigrationError("Old AgentMemory is still answering on port 3111 after stop; refusing to switch")
+
+
+def verify_native_compression_queue() -> None:
+    config = env_values(ENV_PATH.read_text() if ENV_PATH.is_file() else "")
+    token = config.get("AGENTMEMORY_SECRET", "")
+    if not token:
+        generated = HOME / ".agentmemory" / "secret"
+        if generated.is_file():
+            token = generated.read_text().strip()
+    if not token:
+        raise MigrationError("Cannot verify new authenticated compression queue; no local AgentMemory secret")
+    req = urllib.request.Request(
+        f"{MEMORY_URL}/agentmemory/compression/queue",
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    with urllib.request.urlopen(req, timeout=10) as response:
+        status = json.load(response)
+    if not isinstance(status, dict) or not all(k in status for k in ("pending", "running", "exhausted")):
+        raise MigrationError("New AgentMemory does not expose the integrated compression queue; rolling back")
+
+
 def native_plist(node: str) -> bytes:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     return plistlib.dumps({
@@ -398,6 +428,7 @@ def migrate() -> int:
         stopped = run(node, ROOT / "dist" / "cli.mjs", "stop", check=False, timeout=45)
         if stopped.returncode:
             raise MigrationError("Could not stop old iii worker cleanly: " + stopped.stderr[-700:])
+        wait_old_worker_stopped()
         if relocate_data:
             if not previous_data.is_dir():
                 raise MigrationError(f"Previous AgentMemory data directory disappeared: {previous_data}")
@@ -406,6 +437,7 @@ def migrate() -> int:
         write_atomic(MEMORY_PLIST, native_plist(node), mode=0o644)
         bootstrap(MEMORY_LABEL, MEMORY_PLIST)
         wait_ready()
+        verify_native_compression_queue()
         # Migrate the dependent LM Studio LaunchAgent before moving the proxy checkout.
         if LMSTUDIO_PLIST.is_file():
             old_lmstudio = plistlib.loads(LMSTUDIO_PLIST.read_bytes())
