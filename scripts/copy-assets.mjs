@@ -16,6 +16,6 @@ if (existsSync(envExample)) copyFileSync(envExample, join(dist, '.env.example'))
 
 const viewerDist = join(dist, 'viewer');
 mkdirSync(viewerDist, { recursive: true });
-for (const name of ['index.html', 'favicon.svg']) {
+for (const name of ['index.html', 'settings.html', 'favicon.svg']) {
   copyFileSync(join(root, 'src', 'viewer', name), join(viewerDist, name));
 }
