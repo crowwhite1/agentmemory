@@ -29,7 +29,6 @@ export type CompressionQueueStatus = {
 type CompressionResult = { success?: boolean; skipped?: boolean; retryable?: boolean; error?: string };
 type CompressionIdentity = { sessionId: string; observationId: string };
 
-const POLL_MS = 2_000;
 const BACKFILL_MS = 300_000;
 const JOB_BATCH = 64;
 const MAX_ATTEMPTS = 2;
@@ -49,7 +48,7 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
   let failures = 0;
   let lastError: string | undefined;
   let backfillAt = 0;
-  let timer: ReturnType<typeof setInterval> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
 
   async function enqueue(identity: CompressionIdentity): Promise<boolean> {
     if (!identity?.sessionId || !identity?.observationId) return false;
@@ -66,8 +65,22 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
       enqueuedAt: now, dueAt: now, attempts: 0, status: "pending",
     };
     await kv.set(KV.compressionQueue, id, job);
-    queueMicrotask(() => { void drain(); });
+    wake();
     return true;
+  }
+
+  function schedule(ms: number): void {
+    if (stopped) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = undefined;
+      void drain();
+    }, Math.max(0, ms));
+    timer.unref();
+  }
+
+  function wake(): void {
+    if (!stopped && !active) schedule(0);
   }
 
   async function recoverFromObservations(): Promise<void> {
@@ -142,6 +155,16 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
       logger.warn("Compression queue pass failed", { error: lastError });
     } finally {
       active = false;
+      if (!stopped) {
+        try {
+          const jobs = await kv.list<CompressionQueueJob>(KV.compressionQueue);
+          const due = jobs.filter((j) => j && j.status !== "exhausted")
+            .reduce((min, j) => Math.min(min, j.dueAt), backfillAt);
+          schedule(Math.max(0, due - Date.now()));
+        } catch {
+          schedule(BACKFILL_MS);
+        }
+      }
     }
   }
 
@@ -163,12 +186,10 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
   sdk.registerFunction("mem::compression-enqueue", enqueue);
   sdk.registerFunction("mem::compression-queue-status", status);
 
-  timer = setInterval(() => { void drain(); }, POLL_MS);
-  timer.unref();
-  // The first sweep also picks up pending captures left behind by a crash.
-  void drain();
+  // Wake on new work, scheduled retry deadlines, and slow recovery sweeps, not a health-poll loop.
+  schedule(0);
   return {
-    stop: () => { stopped = true; if (timer) clearInterval(timer); },
+    stop: () => { stopped = true; if (timer) clearTimeout(timer); },
     drain,
     status,
   };
