@@ -511,9 +511,8 @@ export function registerObserveFunction(
           afterKeyedLock(`obs:${payload.sessionId}`, async () => {
             try {
               await sdk.trigger({
-                function_id: "mem::compress",
+                function_id: "mem::compression-enqueue",
                 payload: { observationId: obsId, sessionId: payload.sessionId },
-                action: TriggerAction.Void(),
               });
             } catch {
               await markCompressionDispatchFailed(kv, synthetic);
