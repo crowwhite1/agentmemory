@@ -31,6 +31,7 @@ if [[ -z "$PYTHON" ]]; then
 fi
 npm install --legacy-peer-deps --no-audit --no-fund
 npm run build
+npm run skills:gen
 npm run skills:check
 npm run typecheck:hooks
 npm test
