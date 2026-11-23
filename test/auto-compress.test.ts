@@ -159,11 +159,11 @@ describe("mem::observe auto-compress gate", () => {
 
     await sdk.trigger("mem::observe", validPayload());
 
-    const compressCalls = sdk.triggered.filter((t) => t.id === "mem::compress");
+    const compressCalls = sdk.triggered.filter((t) => t.id === "mem::compression-enqueue");
     expect(compressCalls).toHaveLength(1);
   });
 
-  it("AGENTMEMORY_AUTO_COMPRESS=false explicitly: does NOT enqueue"), async () => {
+  it("AGENTMEMORY_AUTO_COMPRESS=false explicitly: does NOT enqueue", async () => {
     process.env["AGENTMEMORY_AUTO_COMPRESS"] = "false";
     const { registerObserveFunction } = await import(
       "../src/functions/observe.js"
@@ -174,7 +174,7 @@ describe("mem::observe auto-compress gate", () => {
 
     await sdk.trigger("mem::observe", validPayload());
 
-    const compressCalls = sdk.triggered.filter((t) => t.id === "mem::compress");
+    const compressCalls = sdk.triggered.filter((t) => t.id === "mem::compression-enqueue");
     expect(compressCalls).toHaveLength(0);
   });
 });
