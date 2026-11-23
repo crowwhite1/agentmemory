@@ -89,7 +89,10 @@ function rig(model = provider(), kv = store()) {
     timestamp: new Date().toISOString(), data: { tool_name: "Read", tool_output: text },
   } });
   const sessions = () => call("api::sessions", { headers: {}, query_params: { agentId: "*" } });
-  const flush = async () => { while (pending.size) await Promise.allSettled([...pending]); };
+  const flush = async () => {
+    await new Promise((resolve) => setImmediate(resolve));
+    while (pending.size) await Promise.allSettled([...pending]);
+  };
   return { kv, sdk, call, model, observe, sessions, flush, close: capture.stop };
 }
 
