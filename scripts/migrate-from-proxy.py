@@ -354,6 +354,23 @@ def migrate() -> int:
             legacy_cli.unlink()
         if OLD_APP.exists():
             shutil.move(str(OLD_APP), str(backup_dir / "AgentMemory Control.app"))
+        if shutil.which("osacompile"):
+            shortcut = run("osacompile", "-o", OLD_APP, "-e",
+                           'open location "http://127.0.0.1:3113/settings"',
+                           check=False, timeout=30)
+            if shortcut.returncode:
+                log("Optional macOS control shortcut unavailable; browser settings still work")
+        user_bin = HOME / ".local" / "bin"
+        user_bin.mkdir(parents=True, exist_ok=True)
+        cli_path = user_bin / "agentmemory"
+        if not cli_path.exists() and not cli_path.is_symlink():
+            wrapper = "#!/bin/zsh\nexec " + json.dumps(node) + " " + json.dumps(
+                str(ROOT / "dist" / "cli.mjs")
+            ) + ' "$@"\n'
+            write_atomic(cli_path, wrapper, mode=0o755)
+            log(f"Native agentmemory CLI installed: {cli_path}")
+        else:
+            log("Existing agentmemory CLI was left unchanged; no commands overwritten")
         expected = (HOME / "life" / "agentmemory-proxy").resolve()
         if proxy_root.resolve() == expected and (proxy_root / "pyproject.toml").is_file():
             archive = backup_dir / "agentmemory-proxy-retired"
