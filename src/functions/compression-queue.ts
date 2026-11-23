@@ -99,7 +99,7 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
       }
       const jobs = await kv.list<CompressionQueueJob>(KV.compressionQueue);
       const due = jobs
-        .filter((job) => job && job.status !== "exhausted" && job.dueAt <= now)
+        .filter((job) => job && job.status !== "exhausted" && job.dueAt <= Date.now())
         .sort((a, b) => a.enqueuedAt - b.enqueuedAt)
         .slice(0, JOB_BATCH);
       const job = due[0];
