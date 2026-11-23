@@ -48,9 +48,11 @@ def log(message: str) -> None:
     print(f"[agentmemory-migrate] {message}", flush=True)
 
 
-def run(*args: str | Path, check: bool = True, timeout: int = 90) -> subprocess.CompletedProcess[str]:
+def run(*args: str | Path, check: bool = True, timeout: int = 90,
+        env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run([str(x) for x in args], check=check, text=True,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          timeout=timeout, env=env)
 
 
 def get_json(url: str, timeout: int = 7) -> dict:
@@ -423,7 +425,10 @@ def migrate() -> int:
         # it before stopping makes the old engine undiscoverable.
         changed = True
         bootout(MEMORY_LABEL, MEMORY_PLIST)
-        stopped = run(node, ROOT / "dist" / "cli.mjs", "stop", check=False, timeout=45)
+        legacy_env = os.environ.copy()
+        legacy_env["AGENTMEMORY_DATA_DIR"] = str(previous_data)
+        stopped = run(node, ROOT / "dist" / "cli.mjs", "stop", check=False,
+                      timeout=45, env=legacy_env)
         if stopped.returncode:
             raise MigrationError("Could not stop old iii worker cleanly: " + stopped.stderr[-700:])
         wait_old_worker_stopped()
