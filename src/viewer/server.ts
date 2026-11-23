@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { renderViewerDocument } from "./document.js";
+import { listSettings, renderSettingsDocument, updateSettings } from "./control-settings.js";
 import {
   checkRequestGuard,
   configuredAllowedOrigins,
@@ -306,6 +307,55 @@ export function startViewerServer(
       }
       res.writeHead(404, { "Content-Type": "text/plain" });
       res.end("viewer not found");
+      return;
+    }
+
+    if (pathname === "/settings" || pathname === "/agentmemory/settings" ||
+        pathname === "/settings/api") {
+      if (!isLoopbackHost(host)) {
+        json(res, 403, { error: "Settings are available only on a loopback viewer." }, req);
+        return;
+      }
+      if (method === "GET" && pathname !== "/settings/api") {
+        try {
+          const document = renderSettingsDocument();
+          res.writeHead(200, {
+            "Content-Type": "text/html; charset=utf-8",
+            "Content-Security-Policy": document.csp,
+            "Cache-Control": "no-store",
+          });
+          res.end(document.html);
+        } catch {
+          json(res, 503, { error: "Settings page is unavailable." }, req);
+        }
+        return;
+      }
+      if (method === "GET" && pathname === "/settings/api") {
+        json(res, 200, { settings: listSettings(), restartRequired: true }, req);
+        return;
+      }
+      if (method === "POST" && pathname === "/settings/api") {
+        let body = "";
+        try {
+          for await (const chunk of req) {
+            body += String(chunk);
+            if (body.length > 65536) throw new Error("Request is too large");
+          }
+          const input: unknown = JSON.parse(body);
+          if (!input || typeof input !== "object" || Array.isArray(input) ||
+              !("settings" in input)) throw new Error("Specify settings object");
+          const changed = updateSettings(
+            (input as { settings: Record<string, unknown> }).settings,
+          );
+          json(res, 200, { success: true, changed, restartRequired: true }, req);
+        } catch (error) {
+          json(res, 400, {
+            error: error instanceof Error ? error.message : "Invalid settings request",
+          }, req);
+        }
+        return;
+      }
+      json(res, 405, { error: "Method not allowed" }, req);
       return;
     }
 
