@@ -30,7 +30,7 @@ type CompressionResult = { success?: boolean; skipped?: boolean; retryable?: boo
 type CompressionIdentity = { sessionId: string; observationId: string };
 
 const POLL_MS = 2_000;
-const BACKFILL_MS = 60_000;
+const BACKFILL_MS = 300_000;
 const JOB_BATCH = 64;
 const MAX_ATTEMPTS = 2;
 
@@ -66,6 +66,7 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
       enqueuedAt: now, dueAt: now, attempts: 0, status: "pending",
     };
     await kv.set(KV.compressionQueue, id, job);
+    queueMicrotask(() => { void drain(); });
     return true;
   }
 
