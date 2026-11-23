@@ -63,6 +63,11 @@ function rig(model = provider(), kv = store()) {
   registerObserveFunction(sdk as never, kv as never);
   const capture = registerCaptureFunctions(sdk as never, kv as never, { durableAfterMs: 0 });
   registerCompressFunction(sdk as never, kv as never, model);
+  // Legacy summary-repair tests intentionally exercise the compression
+  // lifecycle. Keep dispatch asynchronous; queue persistence is tested
+  // independently by compression-queue.test.ts.
+  sdk.registerFunction("mem::compression-enqueue", async (identity: any) =>
+    sdk.trigger({ function_id: "mem::compress", payload: identity, action: { type: "void" } }));
   registerSummarizeFunction(sdk as never, kv as never, model);
   registerSessionFinalizeFunction(sdk as never, kv as never);
   registerRememberFunction(sdk as never, kv as never);
