@@ -83,6 +83,27 @@ export interface ObservationSource {
   payload?: unknown;
 }
 
+export interface CompressionQueueJob {
+  id: string;
+  sessionId: string;
+  observationId: string;
+  enqueuedAt: number;
+  dueAt: number;
+  attempts: number;
+  status: "pending" | "running" | "exhausted";
+  lastError?: string;
+}
+
+export interface CompressionQueueStatus {
+  pending: number;
+  running: number;
+  exhausted: number;
+  oldestPendingAgeMs: number | null;
+  completedSinceStart: number;
+  failuresSinceStart: number;
+  lastError?: string;
+}
+
 export interface ObservationCompression {
   status: "pending" | "failed" | "complete";
   revision: string;
