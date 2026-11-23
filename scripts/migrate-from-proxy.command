@@ -9,6 +9,10 @@ if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1 || ! co
   echo "Install Node.js 20+ and npm before migration." >&2
   exit 1
 fi
+if ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)'; then
+  echo "AgentMemory requires Node.js 20 or newer." >&2
+  exit 1
+fi
 # AgentMemory intentionally does not commit package-lock.json.
 # Use the same installation flags as the upstream CI matrix.
 echo "[agentmemory-migrate] Building fork and running tests before modifying services..."
