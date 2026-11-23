@@ -48,6 +48,11 @@ function rig(provider: MemoryProvider = { name: "test", compress: vi.fn(async ()
   };
   registerCompressFunction(sdk as never, kv as never, provider);
   registerObserveFunction(sdk as never, kv as never);
+  // This suite isolates compression/recovery, not the scheduler itself.
+  // Preserve its asynchronous compression dispatch; queue behavior has
+  // dedicated tests in compression-queue.test.ts.
+  sdk.registerFunction("mem::compression-enqueue", async (identity: any) =>
+    sdk.trigger({ function_id: "mem::compress", payload: identity, action: { type: "void" } }));
   registerCompressionApi(sdk as never, "test-auth");
   const call = (id: string, input: any) => handlers.get(id)!(input);
   const seed = async (id = "obs-recovery", sessionId = "session-recovery", project = "project-a", agentId = "agent-a") => {
