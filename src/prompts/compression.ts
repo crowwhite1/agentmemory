@@ -26,7 +26,9 @@ Rules:
 - File paths must be exact
 - Importance: 1-3 for routine reads, 4-6 for edits/commands, 7-9 for architectural decisions, 10 for breaking changes
 - Concepts should be reusable search terms (e.g., "React hooks", "SQL migration", "auth middleware"); keep them in the user's language: when the source content is not English, include at least one concept in that original language, and when the observation mixes languages include both the original-language and English terms so search works in either
-- Strip any secrets, tokens, or credentials from the output`;
+- Strip any secrets, tokens, or credentials from the output
+- Never copy Base64, data URIs, image bytes, or binary blobs into XML. Summarize what the image shows from available textual evidence.
+- In <files>, output only actual filesystem paths from the observation, never image bytes, Base64, data URIs, or opaque payloads`;
 
 export function buildCompressionPrompt(observation: {
   hookType: string;
@@ -44,27 +46,41 @@ export function buildCompressionPrompt(observation: {
 
   if (observation.toolName) parts.push(`Tool: ${observation.toolName}`);
   if (observation.toolInput) {
-    const input =
-      typeof observation.toolInput === "string"
-        ? observation.toolInput
-        : JSON.stringify(observation.toolInput, null, 2);
-    parts.push(`Input:\n${truncate(input, 4000)}`);
+    parts.push(`Input:\n${safePromptText(observation.toolInput, 4000)}`);
   }
   if (observation.toolOutput) {
-    const output =
-      typeof observation.toolOutput === "string"
-        ? observation.toolOutput
-        : JSON.stringify(observation.toolOutput, null, 2);
-    parts.push(`Output:\n${truncate(output, 4000)}`);
+    parts.push(`Output:\n${safePromptText(observation.toolOutput, 4000)}`);
   }
   if (observation.userPrompt) {
-    parts.push(`User prompt:\n${truncate(observation.userPrompt, 2000)}`);
+    parts.push(`User prompt:\n${safePromptText(observation.userPrompt, 2000)}`);
   }
   if (observation.assistantResponse) {
-    parts.push(`Assistant response:\n${truncate(observation.assistantResponse, 4000)}`);
+    parts.push(`Assistant response:\n${safePromptText(observation.assistantResponse, 4000)}`);
   }
 
   return parts.join("\n\n");
+}
+
+const IMAGE_DATA_URI = /data:(image\\/[a-z0-9.+-]+);base64,[a-z0-9+/=\\s]{80,}/gi;
+const BASE64_SEQUENCE = /[a-z0-9+/]{256,}={0,2}/gi;
+const BINARY_SIGNATURE = /^(?:\\/9j\\/|iVBORw0KGgo|R0lGOD|UklGR|JVBERi0|UEsDB)/;
+
+export function sanitizeCompressionText(input: string): string {
+  return input
+    .replace(IMAGE_DATA_URI, (_match, mime: string) => `[omitted ${mime} binary image]`)
+    .replace(BASE64_SEQUENCE, (value) => {
+      if (BINARY_SIGNATURE.test(value) ||
+          (/[A-Z]/.test(value) && /[a-z]/.test(value) && /[0-9]/.test(value) &&
+           /[+/]/.test(value))) {
+        return "[omitted encoded binary payload]";
+      }
+      return value;
+    });
+}
+
+function safePromptText(value: unknown, limit: number): string {
+  const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  return truncate(sanitizeCompressionText(text ?? ""), limit);
 }
 
 function truncate(s: string, max: number): string {
