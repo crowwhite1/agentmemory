@@ -48,6 +48,7 @@ import { registerSlotsFunctions, isSlotsEnabled, isReflectEnabled } from "./func
 import { registerDiskSizeManager } from "./functions/disk-size-manager.js";
 import { registerCompressFunction } from "./functions/compress.js";
 import { registerCompressionQueue } from "./functions/compression-queue.js";
+import { SerializedMemoryProvider } from "./providers/serialized.js";
 import {
   registerSearchFunction,
   backfillVectorBacklog,
@@ -212,10 +213,15 @@ async function main() {
   const embeddingConfig = loadEmbeddingConfig();
   const fallbackConfig = loadFallbackConfig();
 
-  const provider =
+  const baseProvider =
     fallbackConfig.providers.length > 0 && config.provider.provider !== "noop"
       ? createFallbackProvider(config.provider, fallbackConfig)
       : createProvider(config.provider);
+  // A single gate prevents independent summary, compression and graph requests
+  // from flooding a slow local model. Cloud users can explicitly opt out.
+  const provider = process.env["AGENTMEMORY_LLM_SERIALIZE"] === "false"
+    ? baseProvider
+    : new SerializedMemoryProvider(baseProvider);
 
   const embeddingProvider = createEmbeddingProvider();
   const imageEmbeddingProvider = createImageEmbeddingProvider();
