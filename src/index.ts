@@ -652,6 +652,8 @@ async function main() {
     `MCP surface (opt-in via \`npx @agentmemory/mcp\`): ${getAllTools().length} tools · 6 resources · 3 prompts`,
   );
 
+  compressionQueue.start();
+
   void (async () => {
     try {
       const drained = await capture.drainLocalSpool();
