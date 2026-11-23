@@ -330,6 +330,18 @@ def verify_native_compression_queue() -> None:
         raise MigrationError("New AgentMemory does not expose the integrated compression queue; rolling back")
 
 
+def verify_settings_page() -> None:
+    try:
+        with urllib.request.urlopen(
+            "http://127.0.0.1:3113/settings", timeout=8
+        ) as response:
+            page = response.read(65536).decode("utf-8", errors="replace")
+        if "Настройки AgentMemory" not in page:
+            raise MigrationError("The new AgentMemory settings page is missing")
+    except OSError as exc:
+        raise MigrationError("New AgentMemory viewer settings page is unavailable") from exc
+
+
 def native_plist(node: str) -> bytes:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     return plistlib.dumps({
@@ -469,6 +481,7 @@ def migrate() -> int:
         bootstrap(MEMORY_LABEL, MEMORY_PLIST)
         wait_ready()
         verify_native_compression_queue()
+        verify_settings_page()
         # Migrate the dependent LM Studio LaunchAgent before moving the proxy checkout.
         if LMSTUDIO_PLIST.is_file():
             old_lmstudio = plistlib.loads(LMSTUDIO_PLIST.read_bytes())
