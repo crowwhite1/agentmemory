@@ -28,6 +28,23 @@ class MigrationConfigTests(unittest.TestCase):
         self.assertIn("http://127.0.0.1:3111", result)
         self.assertNotIn("http://127.0.0.1:3112", result)
 
+    def test_codex_preserves_agentmemory_secret_and_other_custom_config(self):
+        original = (
+            'model="gpt-6"\n'
+            '[mcp_servers.agentmemory]\n'
+            'command="npx"\n'
+            'enabled=true\n'
+            '[mcp_servers.agentmemory.env]\n'
+            'AGENTMEMORY_URL="http://127.0.0.1:3112"\n'
+            'AGENTMEMORY_SECRET="existing-local-token"\n'
+            'AGENTMEMORY_AGENT_ID="crowisp"\n'
+        )
+        result = migration.update_codex_toml(original, "/bin/npx")
+        self.assertIn('AGENTMEMORY_SECRET = "existing-local-token"', result)
+        self.assertIn('AGENTMEMORY_AGENT_ID = "crowisp"', result)
+        self.assertIn("enabled = true", result)
+        self.assertIn('AGENTMEMORY_URL = "http://127.0.0.1:3111"', result)
+
     def test_invalid_config_fails_closed(self):
         with self.assertRaises(ValueError):
             migration.update_codex_toml("[missing\n", "npx")

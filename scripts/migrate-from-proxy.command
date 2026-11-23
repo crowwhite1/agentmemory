@@ -9,10 +9,12 @@ if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1 || ! co
   echo "Install Node.js 20+ and npm before migration." >&2
   exit 1
 fi
-if [[ ! -f package-lock.json ]]; then
-  echo "package-lock.json is missing; refusing unpinned install." >&2
+if ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)'; then
+  echo "AgentMemory requires Node.js 20 or newer." >&2
   exit 1
 fi
+# AgentMemory intentionally does not commit package-lock.json.
+# Use the same installation flags as the upstream CI matrix.
 echo "[agentmemory-migrate] Building fork and running tests before modifying services..."
 # macOS system python3 may be 3.9; this migration needs tomllib (3.11+).
 PYTHON=""
@@ -27,7 +29,10 @@ if [[ -z "$PYTHON" ]]; then
   echo "Python 3.11+ not found. Install it before attempting migration." >&2
   exit 1
 fi
-npm ci
+npm install --legacy-peer-deps --no-audit --no-fund
+npm run build
+npm run skills:check
+npm run typecheck:hooks
 npm test
 "$PYTHON" scripts/test-proxy-migration.py
 exec "$PYTHON" scripts/migrate-from-proxy.py

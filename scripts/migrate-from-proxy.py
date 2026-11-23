@@ -48,9 +48,11 @@ def log(message: str) -> None:
     print(f"[agentmemory-migrate] {message}", flush=True)
 
 
-def run(*args: str | Path, check: bool = True, timeout: int = 90) -> subprocess.CompletedProcess[str]:
+def run(*args: str | Path, check: bool = True, timeout: int = 90,
+        env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run([str(x) for x in args], check=check, text=True,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          timeout=timeout, env=env)
 
 
 def get_json(url: str, timeout: int = 7) -> dict:
@@ -92,10 +94,20 @@ def update_env(text: str, values: dict[str, str]) -> str:
 
 
 def update_codex_toml(text: str, npx: str) -> str:
-    if text.strip():
-        tomllib.loads(text)
+    parsed = tomllib.loads(text) if text.strip() else {}
     if re.search(r"(?m)^\s*\[\[mcp_servers\.agentmemory", text):
         raise MigrationError("Unsupported Codex AgentMemory array-of-tables; leaving config unchanged")
+    servers = parsed.get("mcp_servers", {})
+    existing = servers.get("agentmemory", {}) if isinstance(servers, dict) else {}
+    if not isinstance(existing, dict):
+        raise MigrationError("Invalid Codex AgentMemory config; leaving unchanged")
+    extras = existing.get("env", {})
+    if not isinstance(extras, dict):
+        raise MigrationError("Invalid AgentMemory MCP environment")
+    env = {k: v for k, v in extras.items()
+           if isinstance(k, str) and isinstance(v, str)
+           and k not in ("AGENTMEMORY_URL", "AGENTMEMORY_FORCE_PROXY")}
+    env.update({"AGENTMEMORY_URL": MEMORY_URL, "AGENTMEMORY_FORCE_PROXY": "1"})
     kept: list[str] = []
     for part in re.split(r"(?m)(?=^\[+[^\n]+\]+\s*$)", text):
         hdr = re.match(r"\s*\[([^]]+)\]", part)
@@ -104,14 +116,21 @@ def update_codex_toml(text: str, npx: str) -> str:
             continue
         kept.append(part)
     prefix = "".join(kept).rstrip() + "\n\n"
-    updated = prefix + (
-        "[mcp_servers.agentmemory]\n"
-        f"command = {json.dumps(npx)}\n"
-        'args = ["-y", "@agentmemory/mcp"]\n\n'
-        "[mcp_servers.agentmemory.env]\n"
-        f'AGENTMEMORY_URL = "{MEMORY_URL}"\n'
-        'AGENTMEMORY_FORCE_PROXY = "1"\n'
-    )
+    lines = [
+        "[mcp_servers.agentmemory]",
+        f"command = {json.dumps(npx)}",
+        'args = ["-y", "@agentmemory/mcp"]',
+    ]
+    # Preserve existing AgentMemory-specific settings, except obsolete routing.
+    for key, value in existing.items():
+        if key in ("command", "args", "env"):
+            continue
+        if re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_-]*", key) and isinstance(value, (str, bool, int)):
+            encoded = json.dumps(value).lower() if isinstance(value, bool) else json.dumps(value)
+            lines.append(f"{key} = {encoded}")
+    lines.extend(["", "[mcp_servers.agentmemory.env]"])
+    lines.extend(f"{key} = {json.dumps(value)}" for key, value in env.items())
+    updated = prefix + "\n".join(lines) + "\n"
     tomllib.loads(updated)
     return updated
 
@@ -311,6 +330,18 @@ def verify_native_compression_queue() -> None:
         raise MigrationError("New AgentMemory does not expose the integrated compression queue; rolling back")
 
 
+def verify_settings_page() -> None:
+    try:
+        with urllib.request.urlopen(
+            "http://127.0.0.1:3113/settings", timeout=8
+        ) as response:
+            page = response.read(65536).decode("utf-8", errors="replace")
+        if "Настройки AgentMemory" not in page:
+            raise MigrationError("The new AgentMemory settings page is missing")
+    except OSError as exc:
+        raise MigrationError("New AgentMemory viewer settings page is unavailable") from exc
+
+
 def native_plist(node: str) -> bytes:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     return plistlib.dumps({
@@ -377,10 +408,13 @@ def migrate() -> int:
             f"Cannot merge state directories {previous_data} and {next_data}; "
             "the target is not empty. No service has been changed."
         )
-    if previous_data.is_dir():
-        state_file = previous_data / "state_store.db"
-        if state_file.is_file():
-            snapshot_sqlite(state_file, backup_dir / "active-previous-state.sqlite")
+    state_file = previous_data / "state_store.db"
+    if not state_file.is_file():
+        raise MigrationError(
+            f"Cannot locate the legacy AgentMemory state database at {state_file}. "
+            "Refusing to cut over without a verified memory backup."
+        )
+    snapshot_sqlite(state_file, backup_dir / "active-previous-state.sqlite")
     proxy_env_path = proxy_root / ".env"
     proxy_env = env_values(proxy_env_path.read_text() if proxy_env_path.is_file() else "")
     queue_path = Path(proxy_env.get("QUEUE_DB_PATH") or "queue.db").expanduser()
@@ -403,6 +437,10 @@ def migrate() -> int:
         "loaded": was_loaded,
     }, indent=2) + "\n")
     log(f"All configuration and databases backed up: {backup_dir}")
+    legacy_cli = HOME / ".local" / "bin" / "agentmemory-proxy"
+    legacy_cli_target = os.readlink(legacy_cli) if legacy_cli.is_symlink() else None
+    retired_checkout = backup_dir / "agentmemory-proxy-retired"
+    retired_app = backup_dir / "AgentMemory Control.app"
     changed = False
     try:
         if not env.get("OPENAI_MODEL"):
@@ -417,18 +455,23 @@ def migrate() -> int:
             CODEX_TOML.read_text() if CODEX_TOML.is_file() else "", npx
         )
         new_hooks = update_hooks(CODEX_HOOKS.read_text()) if CODEX_HOOKS.is_file() else None
+        check_old_proxy()
+        # Stop with the LEGACY environment still intact. The CLI uses
+        # AGENTMEMORY_DATA_DIR to find Compose ownership metadata; replacing
+        # it before stopping makes the old engine undiscoverable.
         changed = True
+        bootout(MEMORY_LABEL, MEMORY_PLIST)
+        legacy_env = os.environ.copy()
+        legacy_env["AGENTMEMORY_DATA_DIR"] = str(previous_data)
+        stopped = run(node, ROOT / "dist" / "cli.mjs", "stop", check=False,
+                      timeout=45, env=legacy_env)
+        if stopped.returncode:
+            raise MigrationError("Could not stop old iii worker cleanly: " + stopped.stderr[-700:])
+        wait_old_worker_stopped()
         write_atomic(ENV_PATH, new_env)
         write_atomic(CODEX_TOML, new_codex)
         if new_hooks is not None:
             write_atomic(CODEX_HOOKS, new_hooks)
-        check_old_proxy()
-        # Detach previous managed launchd before stopping the detached iii worker.
-        bootout(MEMORY_LABEL, MEMORY_PLIST)
-        stopped = run(node, ROOT / "dist" / "cli.mjs", "stop", check=False, timeout=45)
-        if stopped.returncode:
-            raise MigrationError("Could not stop old iii worker cleanly: " + stopped.stderr[-700:])
-        wait_old_worker_stopped()
         if relocate_data:
             if not previous_data.is_dir():
                 raise MigrationError(f"Previous AgentMemory data directory disappeared: {previous_data}")
@@ -438,6 +481,7 @@ def migrate() -> int:
         bootstrap(MEMORY_LABEL, MEMORY_PLIST)
         wait_ready()
         verify_native_compression_queue()
+        verify_settings_page()
         # Migrate the dependent LM Studio LaunchAgent before moving the proxy checkout.
         if LMSTUDIO_PLIST.is_file():
             old_lmstudio = plistlib.loads(LMSTUDIO_PLIST.read_bytes())
@@ -456,7 +500,6 @@ def migrate() -> int:
         bootout(PROXY_LABEL, PROXY_PLIST)
         check_queue_file(queue_path)
         PROXY_PLIST.unlink()
-        legacy_cli = HOME / ".local" / "bin" / "agentmemory-proxy"
         if legacy_cli.is_symlink() and str(proxy_root) in str(legacy_cli.resolve()):
             legacy_cli.unlink()
         if OLD_APP.exists():
@@ -480,9 +523,8 @@ def migrate() -> int:
             log("Existing agentmemory CLI was left unchanged; no commands overwritten")
         expected = (HOME / "life" / "agentmemory-proxy").resolve()
         if proxy_root.resolve() == expected and (proxy_root / "pyproject.toml").is_file():
-            archive = backup_dir / "agentmemory-proxy-retired"
-            shutil.move(str(proxy_root), str(archive))
-            log(f"Old proxy repository retired to archive: {archive}")
+            shutil.move(str(proxy_root), str(retired_checkout))
+            log(f"Old proxy repository retired to archive: {retired_checkout}")
         else:
             log(f"Unrecognized proxy checkout left unchanged: {proxy_root}")
         log("SUCCESS: old proxy service removed, fork active, Codex routes directly to :3111")
@@ -493,6 +535,18 @@ def migrate() -> int:
     except BaseException:
         if changed:
             log("Migration interrupted; restoring previous configuration and services")
+            # Restore legacy executable locations BEFORE relaunching launchd.
+            # A failure after moving the checkout must never strand rollback.
+            try:
+                if retired_checkout.exists() and not proxy_root.exists():
+                    shutil.move(str(retired_checkout), str(proxy_root))
+                if retired_app.exists() and not OLD_APP.exists():
+                    shutil.move(str(retired_app), str(OLD_APP))
+                if legacy_cli_target and not legacy_cli.exists() and not legacy_cli.is_symlink():
+                    legacy_cli.parent.mkdir(parents=True, exist_ok=True)
+                    legacy_cli.symlink_to(legacy_cli_target)
+            except OSError as exc:
+                log(f"WARNING: legacy executable restore incomplete: {exc}")
             try:
                 bootout(MEMORY_LABEL, MEMORY_PLIST)
                 run(node, ROOT / "dist" / "cli.mjs", "stop", check=False, timeout=40)

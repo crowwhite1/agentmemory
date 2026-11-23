@@ -61,9 +61,9 @@ export function buildCompressionPrompt(observation: {
   return parts.join("\n\n");
 }
 
-const IMAGE_DATA_URI = /data:(image\\/[a-z0-9.+-]+);base64,[a-z0-9+/=\\s]{80,}/gi;
-const BASE64_SEQUENCE = /[a-z0-9+/]{256,}={0,2}/gi;
-const BINARY_SIGNATURE = /^(?:\\/9j\\/|iVBORw0KGgo|R0lGOD|UklGR|JVBERi0|UEsDB)/;
+const IMAGE_DATA_URI = /data:(image\/[a-z0-9.+-]+);base64,[a-z0-9+\/=\s]{80,}/gi;
+const BASE64_SEQUENCE = /[a-z0-9+\/]{256,}={0,2}/gi;
+const BINARY_SIGNATURE = /^(?:\/9j\/|iVBORw0KGgo|R0lGOD|UklGR|JVBERi0|UEsDB)/;
 
 export function sanitizeCompressionText(input: string): string {
   return input
