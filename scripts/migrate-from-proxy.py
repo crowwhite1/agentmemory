@@ -192,6 +192,39 @@ def snapshot_sqlite(source: Path, backup: Path) -> None:
     backup.chmod(0o600)
 
 
+def retry_failed_proxy_writes_once() -> None:
+    """Retry old failed *delivery* rows once before considering a cutover."""
+    status = get_json(f"{LEGACY_URL}/proxy/status")
+    if status.get("failed", 0) <= 0:
+        return
+    if status.get("processing", 0) or status.get("pending", 0):
+        raise MigrationError("Wait for the old write queue to drain before retrying failed entries")
+    log(f"Retrying {status['failed']} failed proxy deliveries once before migration")
+    req = urllib.request.Request(f"{LEGACY_URL}/proxy/retry-all", method="POST")
+    with urllib.request.urlopen(req, timeout=15):
+        pass
+    until = time.monotonic() + 120
+    while time.monotonic() < until:
+        state = get_json(f"{LEGACY_URL}/proxy/status")
+        if all(state.get(key) == 0 for key in ("pending", "processing", "failed")):
+            return
+        if state.get("failed", 0) > 0 and not state.get("processing", 0):
+            break
+        time.sleep(2)
+    raise MigrationError("Some legacy delivery rows still fail. Resolve them in the old dashboard; no services have been stopped.")
+
+
+def verify_model_available(configured_model: str) -> None:
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:1234/v1/models", timeout=8) as res:
+            models = json.load(res)
+    except (OSError, ValueError) as exc:
+        raise MigrationError("LM Studio local server at :1234 is unavailable") from exc
+    ids = [item.get("id") for item in models.get("data", []) if isinstance(item, dict)]
+    if configured_model not in ids:
+        raise MigrationError(f"Configured model {configured_model!r} is not listed by LM Studio; refusing to switch models.")
+
+
 def check_old_proxy() -> dict:
     status = get_json(f"{LEGACY_URL}/proxy/status")
     if any(status.get(k) != 0 for k in ("pending", "processing", "failed")):
@@ -262,8 +295,13 @@ def migrate() -> int:
     node, npx = shutil.which("node"), shutil.which("npx")
     if not node or not npx:
         raise MigrationError("Node.js and npm are required")
+    retry_failed_proxy_writes_once()
     status = check_old_proxy()
-    log("Old proxy queue and LLM gateway are idle")
+    configured_model = env_values(ENV_PATH.read_text() if ENV_PATH.exists() else "").get("OPENAI_MODEL", "")
+    if not configured_model:
+        raise MigrationError("No OPENAI_MODEL is configured; refusing to choose a replacement")
+    verify_model_available(configured_model)
+    log("Old proxy queue is drained and the configured LM Studio model is available")
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_dir = BACKUP_ROOT / stamp
     backup_dir.mkdir(parents=True, mode=0o700, exist_ok=False)
