@@ -15,7 +15,7 @@ const HookTypeEnum = z.enum([
   "session_end",
 ]);
 
-const ObservationTypeEnum = z.enum([
+export const ObservationTypeEnum = z.enum([
   "file_read",
   "file_write",
   "file_edit",

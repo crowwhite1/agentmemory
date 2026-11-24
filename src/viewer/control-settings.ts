@@ -78,6 +78,7 @@ export function listSettings(): SettingsEntry[] {
   for (const [key, rule] of Object.entries(compressionQueueSettings)) {
     known.set(key, { key, group: "Очередь компрессии", example: String(rule.fallback), description: rule.description });
   }
+  known.set("OPENAI_COMPRESSION_FORMAT", { key: "OPENAI_COMPRESSION_FORMAT", group: "Формат компрессии", example: "xml", description: "xml (по умолчанию) или json_schema (структурированный JSON, если модель и runtime поддерживают). Применяется после перезапуска." });
   const configured = parseEnvContent(envFileContent());
   for (const key of Object.keys(configured)) {
     if (!KEY_PATTERN.test(key)) continue;
@@ -109,7 +110,7 @@ export function updateSettings(changes: Record<string, unknown>): string[] {
   if (!entries.length || entries.length > 100) throw new Error("Specify 1–100 settings");
   for (const [key, value] of entries) {
     if (!permitted.has(key) || !KEY_PATTERN.test(key)) throw new Error(`Unknown setting: ${key}`);
-    if (typeof value !== "string" || !validQueueSetting(key, value) || value.length > CUSTOM_VALUE_MAX ||
+    if (typeof value !== "string" || !validQueueSetting(key, value) || (key === "OPENAI_COMPRESSION_FORMAT" && !["", "xml", "json_schema"].includes(value)) || value.length > CUSTOM_VALUE_MAX ||
         /[\r\n\0"']/.test(value)) {
       throw new Error(`Invalid setting value: ${key}`);
     }
