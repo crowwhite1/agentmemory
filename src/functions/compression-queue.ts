@@ -243,19 +243,20 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
         await kv.delete(KV.compressionQueue, job.id);
       } else {
         failures++;
-        lastError = safeError(result?.error || "compression_failed");
+        const failureError = safeError(result?.error || "compression_failed");
+        lastError = failureError;
         if (result?.retryable === false) {
           await kv.delete(KV.compressionQueue, job.id);
-          await recordFailure(claimed, lastError, "not_retryable");
+          await recordFailure(claimed, failureError, "not_retryable");
         } else {
           const exhausted = claimed.attempts >= maxAttempts;
           const retryDelay = Math.min(retryMaxMs, retryBaseMs * 2 ** Math.min(claimed.attempts - 1, 20));
           await kv.set(KV.compressionQueue, job.id, {
             ...claimed, status: exhausted ? "exhausted" : "pending",
             dueAt: Date.now() + retryDelay,
-            lastError,
+            lastError: failureError,
           } satisfies CompressionQueueJob);
-          await recordFailure(claimed, lastError, exhausted ? "exhausted" : "retry_scheduled");
+          await recordFailure(claimed, failureError, exhausted ? "exhausted" : "retry_scheduled");
         }
       }
     } catch {
