@@ -68,9 +68,7 @@ concurrent AgentMemory workers must opt in to the same lock.
  
 Run `npm test` and verify on the target Mac with two unrelated Git roots,
 including native hook capture and recall, distinct state directories and
-ports, stop/restart, and non-overlapping LM Studio requests. The launcher
-provides CLI management and links to per-instance settings; a unified viewer
-and automatic Desktop/legacy migration are not implemented here.
+ports, stop/restart, and non-overlapping LM Studio requests. The launcher provides CLI management. Managed Viewers also display the common project registry on the Settings page.
 
 ## Project-aware MCP and capture entrypoints
 
@@ -83,3 +81,17 @@ MCP subprocess cwd. Native hook dispatch uses the event's cwd/workspace roots
 and binds the session ID to its initial project; conflicts are rejected.
 The global Codex config migration has not yet installed these entrypoints.
 Validate actual Desktop roots support before relying on Desktop MCP tools.
+
+## Unified project panel
+
+Open Settings on any managed instance. The project panel shows registered
+roots, state directory, disk usage, ports, service state and compression queue
+counts. Start/stop/restart dispatches the existing controller (no shell command
+interpolation). Only loopback, same-origin lifecycle requests are accepted.
+Commands are acknowledged after the controller process spawns, not after
+completion; refresh explicitly. Logs are in
+`~/.agentmemory/projects/actions/instance-N.log`.
+No periodic polling. The panel requires at least one running Viewer; if all
+instances are stopped, start a project with the CLI or the macOS control app.
+Settings edits target the shared .env rather than the generated Compose copy;
+routing variables are protected and runtime changes require restart.

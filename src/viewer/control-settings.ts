@@ -37,7 +37,7 @@ function templateContent(): string {
 }
 
 export function settingsFilePath(): string {
-  return process.env["AGENTMEMORY_ENV_FILE"] || join(homedir(), ".agentmemory", ".env");
+  return process.env["AGENTMEMORY_SHARED_SETTINGS_FILE"] || process.env["AGENTMEMORY_ENV_FILE"] || join(homedir(), ".agentmemory", ".env");
 }
 
 function envFileContent(): string {
@@ -98,6 +98,10 @@ export function updateSettings(changes: Record<string, unknown>): string[] {
   if (!changes || typeof changes !== "object" || Array.isArray(changes)) throw new Error("Invalid settings body");
   const permitted = new Set(listSettings().map((x) => x.key));
   const entries = Object.entries(changes);
+  const protectedRouting = /^(?:III_|AGENTMEMORY_(?:DATA_DIR|RUNTIME_DIR|URL|STATE_BACKEND|REDIS_URL|CAPTURE_SPOOL_DIR|PROJECT_CONTROLLER|SHARED_SETTINGS_FILE|LLM_LOCK_|LLM_SERIALIZE|METRICS_PORT)|STANDALONE_PERSIST_PATH)/;
+  if (process.env["AGENTMEMORY_PROJECT_CONTROLLER"] && entries.some(([key]) => protectedRouting.test(key))) {
+    throw new Error("Project routing and isolation settings are managed automatically.");
+  }
   if (!entries.length || entries.length > 100) throw new Error("Specify 1–100 settings");
   for (const [key, value] of entries) {
     if (!permitted.has(key) || !KEY_PATTERN.test(key)) throw new Error(`Unknown setting: ${key}`);

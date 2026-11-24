@@ -10,6 +10,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { renderViewerDocument } from "./document.js";
 import { listSettings, renderSettingsDocument, updateSettings } from "./control-settings.js";
+import { listProjectInstances, requestProjectAction } from "./control-projects.js";
 import {
   checkRequestGuard,
   configuredAllowedOrigins,
@@ -307,6 +308,39 @@ export function startViewerServer(
       }
       res.writeHead(404, { "Content-Type": "text/plain" });
       res.end("viewer not found");
+      return;
+    }
+
+    if (pathname === "/settings/projects" || pathname === "/settings/projects/action") {
+      if (!isLoopbackHost(host)) {
+        json(res, 403, { error: "Project control is available only on a loopback viewer." }, req);
+        return;
+      }
+      res.setHeader("Cache-Control", "no-store");
+      if (method === "GET" && pathname === "/settings/projects") {
+        try { json(res, 200, await listProjectInstances(secret), req); }
+        catch { json(res, 503, { error: "Project registry is unavailable." }, req); }
+        return;
+      }
+      if (method === "POST" && pathname === "/settings/projects/action") {
+        // Lifecycle mutations require an exact same-origin browser request.
+        const origin = req.headers.origin;
+        if (origin !== `http://${req.headers.host}` && origin !== `https://${req.headers.host}`) {
+          json(res, 403, { error: "Same-origin request required." }, req);
+          return;
+        }
+        try {
+          const body = await readBody(req);
+          if (body.length > 4096) throw new Error("Request too large");
+          const input = JSON.parse(body);
+          await requestProjectAction(input.instance, input.action);
+          json(res, 202, { accepted: true }, req);
+        } catch (error) {
+          json(res, 400, { error: error instanceof Error ? error.message : "Project action failed." }, req);
+        }
+        return;
+      }
+      json(res, 405, { error: "Method not allowed" }, req);
       return;
     }
 

@@ -20,6 +20,7 @@ button{border:1px solid #5b6380;color:var(--text);background:#313b52;border-radi
 .badge{display:inline-block;margin-top:6px;font-size:11px;color:#e4d79e}.secret{color:#a2d5ad}
 #notice{min-height:20px}.footer{position:sticky;bottom:0;padding:13px;border:1px solid var(--border);border-radius:12px;background:rgba(30,32,40,.96);display:flex;align-items:center;gap:15px;flex-wrap:wrap}
 @media(max-width:650px){.field{grid-template-columns:1fr}.section{padding:16px}.footer{position:static}}
+.project{border-top:1px solid var(--border);padding:12px 0}.project .details{overflow-wrap:anywhere;color:var(--muted);font-size:12px}.project .toolbar{margin-top:8px}.project strong{font-size:16px}
 </style>
 </head>
 <body>
@@ -29,6 +30,7 @@ button{border:1px solid #5b6380;color:var(--text);background:#313b52;border-radi
 <div class="top"><p><strong>Модель:</strong> параметры поставщика LLM можно изменять, не меняя приложение или сохранённые observations.</p>
 <p>Изменения записываются локально в <code>~/.agentmemory/.env</code> (или заданный AGENTMEMORY_ENV_FILE). <strong>Они вступят в силу после перезапуска AgentMemory.</strong> Текущие LLM-запросы не прерываются.</p>
 <p>Секреты не отображаются в интерфейсе и никогда не возвращаются API. Страница не опрашивает сервер по таймеру: данные загружаются при открытии и по нажатию «Обновить».</p></div>
+<section class="section" id="projects-section" hidden><div class="toolbar"><h2>Проекты и экземпляры</h2><button id="projects-reload">Обновить проекты</button></div><p>Отдельное хранилище и очередь для каждого проекта. Состояние обновляется только вручную.</p><div id="projects" aria-live="polite">Загрузка…</div><p id="project-notice" role="status"></p></section>
 <div class="toolbar"><input type="search" id="search" placeholder="Поиск параметров и описаний…" aria-label="Поиск настроек"><button id="reload">Обновить</button><span id="count"></span></div>
 <div id="settings" aria-live="polite">Загрузка…</div>
 <div class="footer"><button id="save" class="primary" disabled>Сохранить изменения</button><span id="notice" role="status">Изменений нет</span></div>
@@ -115,6 +117,53 @@ button{border:1px solid #5b6380;color:var(--text);background:#313b52;border-radi
       el("notice").textContent="Сохранено. Перезапусти AgentMemory, чтобы применить настройки.";
     }catch(error){button.disabled=false;el("notice").textContent="Ошибка: "+error.message;}
   }
+  const stateLabels={running:"Работает",stopped:"Остановлен",unreachable:"Не отвечает",unverified:"Чужой/неподтверждённый процесс"};
+  function formatSize(bytes){
+    if(bytes===null)return "Размер неизвестен";
+    if(bytes<1024*1024)return Math.round(bytes/1024)+" КБ";
+    if(bytes<1024*1024*1024)return (bytes/(1024*1024)).toFixed(1)+" МБ";
+    return (bytes/(1024*1024*1024)).toFixed(2)+" ГБ";
+  }
+  async function projectAction(project,action,button){
+    if(action!=="start"&&!confirm("Выполнить "+action+" для "+project.name+"? Текущие запросы могут прерваться."))return;
+    button.disabled=true;el("project-notice").textContent="Отправка команды…";
+    try{
+      const r=await fetch("/settings/projects/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({instance:project.instance,action})});
+      const body=await r.json();
+      if(!r.ok)throw new Error(body.error||"HTTP "+r.status);
+      el("project-notice").textContent="Команда принята. Нажмите «Обновить проекты» после завершения. Если остановлен текущий Viewer, откройте Viewer другого экземпляра.";
+    }catch(error){el("project-notice").textContent="Ошибка или текущий Viewer остановлен: "+error.message;}
+    finally{button.disabled=false;}
+  }
+  async function loadProjects(){
+    const area=el("projects");
+    try{
+      const r=await fetch("/settings/projects",{cache:"no-store"});
+      if(!r.ok)throw new Error("HTTP "+r.status);
+      const body=await r.json();
+      if(!body.enabled)return;
+      el("projects-section").hidden=false;area.replaceChildren();
+      if(!body.projects.length){area.textContent="Нет зарегистрированных проектов";return;}
+      for(const p of body.projects){
+        const block=document.createElement("div");block.className="project";
+        const title=document.createElement("strong");title.textContent=p.name+" · "+(stateLabels[p.state]||p.state);
+        const meta=document.createElement("div");meta.className="details";meta.textContent=p.root+" · "+p.dataDir+" · "+formatSize(p.sizeBytes)+" · порт "+p.restPort;
+        const queue=document.createElement("p");queue.textContent=p.queue?"Очередь: "+p.queue.pending+" ожидают · "+p.queue.running+" выполняется · "+p.queue.exhausted+" исчерпали попытки":"Очередь недоступна";
+        const actions=document.createElement("div");actions.className="toolbar";
+        for(const [action,label] of [["start","Запустить"],["stop","Остановить"],["restart","Перезапустить"]]){
+          const button=document.createElement("button");button.textContent=label;
+          button.disabled=p.state==="unverified"||(action==="start"&&p.state==="running")||(action!=="start"&&p.state==="stopped");
+          button.addEventListener("click",()=>projectAction(p,action,button));actions.append(button);
+        }
+        if(p.state==="running"){
+          const link=document.createElement("a");link.href=p.viewer;link.textContent="Открыть Viewer";actions.append(link);
+        }
+        block.append(title,meta,queue,actions);area.append(block);
+      }
+    }catch(error){el("projects-section").hidden=false;area.textContent="Не удалось получить проекты: "+error.message;}
+  }
+  el("projects-reload").addEventListener("click",loadProjects);
+  loadProjects();
   el("search").addEventListener("input",render);
   el("reload").addEventListener("click",load);
   el("save").addEventListener("click",save);
