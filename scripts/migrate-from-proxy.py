@@ -41,6 +41,10 @@ LOG_DIR = HOME / "Library" / "Logs" / "agentmemory"
 PROJECT_CONTROL = HOME / ".agentmemory" / "projects"
 PROJECT_REGISTRY = PROJECT_CONTROL / "registry.json"
 PROJECT_LAUNCHER = ROOT / "scripts" / "project-memory.py"
+USER_BIN = HOME / ".local" / "bin"
+PROJECT_CLI = USER_BIN / "agentmemory-projects"
+CODEX_WRAPPER = USER_BIN / "codex-memory"
+SHELL_RCS = [HOME / ".zshrc", HOME / ".bashrc", HOME / ".bash_profile"]
 LEGACY_URL = "http://127.0.0.1:3112"
 MEMORY_URL = "http://127.0.0.1:3111"
 
@@ -182,11 +186,11 @@ def project_hooks(text: str) -> str:
                     raise MigrationError("Invalid Codex hook handler")
                 command = str(handler.get("command", "")) + " " + str(handler.get("args", ""))
                 normalized = command.lower()
-                if "agentmemory" not in normalized:
-                    handlers.append(handler)
-                elif ("agentmemory-proxy" in normalized or "/plugin/scripts/" in normalized
+                if ("agentmemory-proxy" in normalized or ("agentmemory" in normalized and "/plugin/scripts/" in normalized)
                       or "project-memory.py" in normalized or "${claude_plugin_root}/scripts/" in normalized):
                     continue
+                elif "agentmemory" not in normalized:
+                    handlers.append(handler)
                 else:
                     raise MigrationError("Unrecognized AgentMemory hook; inspect hooks.json before migrating")
             if handlers:
@@ -292,6 +296,52 @@ def project_cli(root: Path, action: str, *flags: str, check: bool = True):
                timeout=360, check=check)
 
 
+SHELL_BEGIN = "# >>> agentmemory project-aware codex >>>"
+SHELL_END = "# <<< agentmemory project-aware codex <<<"
+
+
+def shell_config(text: str, real_codex: str) -> str | None:
+    if SHELL_BEGIN in text:
+        if text.count(SHELL_BEGIN) != 1 or text.count(SHELL_END) != 1:
+            raise MigrationError("Invalid managed Codex shell block")
+        text = re.sub(re.escape(SHELL_BEGIN) + r".*?" + re.escape(SHELL_END) + r"\n?",
+                      "", text, flags=re.S)
+    if re.search(r"(?m)^\s*(?:alias\s+codex\s*=|function\s+codex\b|codex\s*\(\s*\))", text):
+        return None
+    command = shlex.join([sys.executable, str(PROJECT_LAUNCHER), "codex-auto", "--"])
+    return (text.rstrip() + "\n\n" + SHELL_BEGIN + "\n"
+            + "codex() {\n  AGENTMEMORY_REAL_CODEX=" + shlex.quote(real_codex)
+            + " " + command + ' "$@"\n}\n' + SHELL_END + "\n")
+
+
+def install_project_commands(real_codex: str | None) -> None:
+    USER_BIN.mkdir(parents=True, exist_ok=True)
+    command = "#!/bin/sh\nexec " + shlex.join([sys.executable, str(PROJECT_LAUNCHER)]) + ' "$@"\n'
+    if not PROJECT_CLI.exists() and not PROJECT_CLI.is_symlink():
+        write_atomic(PROJECT_CLI, command, mode=0o755)
+    if not real_codex:
+        log("Codex CLI is not on PATH; Desktop uses MCP workspace routing")
+        return
+    wrapper = ("#!/bin/sh\nexport AGENTMEMORY_REAL_CODEX=" + shlex.quote(real_codex)
+               + "\nexec " + shlex.join([sys.executable, str(PROJECT_LAUNCHER), "codex-auto", "--"]) + ' "$@"\n')
+    if not CODEX_WRAPPER.exists() and not CODEX_WRAPPER.is_symlink():
+        write_atomic(CODEX_WRAPPER, wrapper, mode=0o755)
+    for rc in SHELL_RCS:
+        if rc.is_symlink():
+            log(f"Existing symlinked shell config left unchanged: {rc}")
+            continue
+        # Do not create startup files for shells the user does not use.
+        if not rc.exists():
+            continue
+        text = rc.read_text()
+        updated = shell_config(text, real_codex)
+        if updated is None:
+            log(f"Existing custom codex alias/function left unchanged in {rc}; use {CODEX_WRAPPER}")
+        else:
+            write_atomic(rc, updated, mode=rc.stat().st_mode & 0o777)
+    log(f"Project CLI: {PROJECT_CLI}; explicit Codex launcher: {CODEX_WRAPPER}")
+
+
 def launch_loaded(label: str) -> bool:
     return run("launchctl", "print", f"{DOMAIN}/{label}", check=False).returncode == 0
 
@@ -335,6 +385,9 @@ def state_databases() -> list[Path]:
     ]
     if env.get("AGENTMEMORY_DATA_DIR"):
         roots.insert(0, Path(env["AGENTMEMORY_DATA_DIR"]).expanduser())
+    life = HOME / "life"
+    if life.is_dir():
+        roots.extend(p / "data" for p in life.iterdir() if p.is_dir())
     paths: set[Path] = set()
     for root in roots:
         for candidate in [root / "state_store.db", root / "data" / "state_store.db"]:
@@ -583,9 +636,12 @@ def migrate() -> int:
     backup_dir = BACKUP_ROOT / stamp
     backup_dir.mkdir(parents=True, mode=0o700, exist_ok=False)
     tracked = [ENV_PATH, CODEX_TOML, CODEX_HOOKS, PROXY_PLIST,
-               MEMORY_PLIST, LMSTUDIO_PLIST, PROJECT_REGISTRY]
+               MEMORY_PLIST, LMSTUDIO_PLIST, PROJECT_REGISTRY,
+               PROJECT_CLI, CODEX_WRAPPER, *[p for p in SHELL_RCS if not p.is_symlink()]]
     existed: list[bool] = []
     for idx, path in enumerate(tracked):
+        if path.is_symlink():
+            raise MigrationError(f"Refusing to overwrite a symlinked managed config: {path}")
         existed.append(path.is_file())
         if path.is_file():
             shutil.copy2(path, backup_dir / f"file-{idx}")
@@ -646,6 +702,7 @@ def migrate() -> int:
     retired_app = backup_dir / "AgentMemory Control.app"
     changed = False
     registered = False
+    installed_app = False
     try:
         if not env.get("OPENAI_MODEL"):
             raise MigrationError("OPENAI_MODEL is missing; refusing to replace your Qwen model")
@@ -717,9 +774,14 @@ def migrate() -> int:
         if OLD_APP.exists():
             shutil.move(str(OLD_APP), str(backup_dir / "AgentMemory Control.app"))
         if shutil.which("osacompile"):
-            shortcut = run("osacompile", "-o", OLD_APP, "-e",
-                           'open location "http://127.0.0.1:3113/settings"',
+            # Opening Control starts the migrated anchor only on demand.
+            start_command = shlex.join([sys.executable, str(PROJECT_LAUNCHER),
+                                        "--project", str(project), "start"])
+            script = "do shell script " + json.dumps(start_command) + "\n" + 'open location "http://127.0.0.1:3113/settings"'
+            OLD_APP.parent.mkdir(parents=True, exist_ok=True)
+            shortcut = run("osacompile", "-o", OLD_APP, "-e", script,
                            check=False, timeout=30)
+            installed_app = OLD_APP.exists()
             if shortcut.returncode:
                 log("Optional macOS control shortcut unavailable; browser settings still work")
         user_bin = HOME / ".local" / "bin"
@@ -733,12 +795,13 @@ def migrate() -> int:
             log(f"Native agentmemory CLI installed: {cli_path}")
         else:
             log("Existing agentmemory CLI was left unchanged; no commands overwritten")
+        install_project_commands(shutil.which("codex"))
         # Keep the old checkout in place: it may contain other projects'
         # unassigned stores or the only compatible Python interpreter.
         log(f"Legacy checkout and any unassigned stores retained at {proxy_root}")
         log("SUCCESS: old proxy service removed, project-isolated fork active")
         log("No memory or queue data deleted; backups remain for rollback")
-        log("Restart active Codex sessions so they reload the new MCP endpoint")
+        log("Restart Codex and open a new terminal to load project-aware configuration")
         log("Settings: http://127.0.0.1:3113/settings")
         return 0
     except BaseException:
@@ -749,6 +812,8 @@ def migrate() -> int:
             try:
                 if retired_checkout.exists() and not proxy_root.exists():
                     shutil.move(str(retired_checkout), str(proxy_root))
+                if installed_app and OLD_APP.exists():
+                    shutil.move(str(OLD_APP), str(backup_dir / "new-control-app-on-rollback"))
                 if retired_app.exists() and not OLD_APP.exists():
                     shutil.move(str(retired_app), str(OLD_APP))
                 if legacy_cli_target and not legacy_cli.exists() and not legacy_cli.is_symlink():

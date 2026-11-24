@@ -53,7 +53,7 @@ function owned(project: RegisteredProject): boolean {
 async function sizeBytes(path: string): Promise<number | null> {
   if (!existsSync(path)) return 0;
   try {
-    const { stdout } = await exec("du", ["-sk", path], { timeout: 4000, maxBuffer: 4096 });
+    const { stdout } = await exec("du", ["-sk", path], { timeout: 4000, maxBuffer: 4096, encoding: "utf8" });
     const kib = Number(stdout.trim().split(/\s+/)[0]);
     return Number.isSafeInteger(kib) && kib >= 0 ? kib * 1024 : null;
   } catch { return null; }
@@ -98,7 +98,7 @@ export async function listProjectInstances(secret?: string) {
  * current Viewer does not kill the controller before it finishes. */
 export async function requestProjectAction(instance: unknown, action: unknown): Promise<void> {
   if (!projectControlEnabled()) throw new Error("Project control is not configured.");
-  if (typeof instance !== "number" || !["start", "stop", "restart"].includes(String(action))) throw new Error("Invalid project action");
+  if (typeof instance !== "number" || typeof action !== "string" || !["start", "stop", "restart"].includes(action)) throw new Error("Invalid project action");
   const project = registeredProjects().find(p => p.instance === instance);
   if (!project) throw new Error("Unknown project instance");
   const operation = action as Action;

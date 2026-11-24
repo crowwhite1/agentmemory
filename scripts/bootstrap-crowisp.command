@@ -19,4 +19,4 @@ else
   mkdir -p "$(dirname "$REPO")"
   git clone https://github.com/crowwhite1/agentmemory.git "$REPO"
 fi
-exec /bin/zsh "$REPO/scripts/migrate-from-proxy.command"
+exec /bin/zsh "$REPO/scripts/migrate-from-proxy.command" "$@"
