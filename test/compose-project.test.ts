@@ -110,6 +110,8 @@ describe("Worker Compose project", () => {
 
   it("forwards all explicit compression queue settings to each worker", () => {
     const workerEnvironment = {
+      AGENTMEMORY_LLM_MAX_CONCURRENT_REQUESTS: "4",
+      AGENTMEMORY_COMPRESSION_QUEUE_CONCURRENCY: "3",
       AGENTMEMORY_COMPRESSION_QUEUE_MAX_ATTEMPTS: "5",
       AGENTMEMORY_COMPRESSION_QUEUE_BACKFILL_MS: "60000",
       AGENTMEMORY_COMPRESSION_QUEUE_RETRY_BASE_MS: "2000",

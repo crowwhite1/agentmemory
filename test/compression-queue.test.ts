@@ -167,6 +167,46 @@ describe("StateKV compression queue", () => {
     } finally { worker.stop(); }
   });
 
+  it("fills parallel slots with distinct jobs and retains concurrent failure records", async () => {
+    vi.stubEnv("AGENTMEMORY_LLM_MAX_CONCURRENT_REQUESTS", "2");
+    vi.stubEnv("AGENTMEMORY_COMPRESSION_QUEUE_CONCURRENCY", "4");
+    vi.stubEnv("AGENTMEMORY_COMPRESSION_QUEUE_MAX_ATTEMPTS", "1");
+    const { kv, sdk, handlers, bucket, raw } = rig();
+    for (let i = 2; i <= 3; i++) {
+      bucket(KV.observations(raw.sessionId)).set("obs-" + i, { ...raw, id: "obs-" + i });
+    }
+    const releases: Array<() => void> = [];
+    const ids: string[] = [];
+    sdk.trigger.mockImplementation(async req => {
+      if (req.function_id !== "mem::compress") return handlers.get(req.function_id)?.(req.payload);
+      ids.push((req.payload as unknown as { observationId: string }).observationId);
+      await new Promise<void>(resolve => releases.push(resolve));
+      return { success: false, error: "parse_failed" };
+    });
+    const worker = registerCompressionQueue(sdk as never, kv as never);
+    try {
+      const pass = worker.drain();
+      await vi.waitFor(() => expect(releases).toHaveLength(2));
+      expect((await worker.status()).running).toBe(2);
+      await worker.drain();
+      expect(ids).toHaveLength(2);
+      releases.splice(0).forEach(resolve => resolve());
+      await pass;
+      const next = worker.drain();
+      await vi.waitFor(() => expect(releases).toHaveLength(1));
+      releases.splice(0).forEach(resolve => resolve());
+      await next;
+      expect(new Set(ids).size).toBe(3);
+      expect((await worker.status()).exhausted).toBe(3);
+      expect(await worker.inspect()).toMatchObject({ history: expect.arrayContaining(
+        ids.map(observationId => expect.objectContaining({ observationId, error: "parse_failed" }))
+      ) });
+    } finally {
+      releases.splice(0).forEach(resolve => resolve());
+      worker.stop();
+    }
+  });
+
   it("resumes a persisted running job after a crash", async () => {
     const { kv, sdk, bucket } = rig();
     bucket(KV.compressionQueue).set(compressionQueueKey("session-1", "obs-1"), {
