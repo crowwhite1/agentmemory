@@ -219,7 +219,7 @@ async function main() {
       : createProvider(config.provider);
   // A single gate prevents independent summary, compression and graph requests
   // from flooding a slow local model. Cloud users can explicitly opt out.
-  const provider = process.env["AGENTMEMORY_LLM_SERIALIZE"] === "false"
+  const provider = process.env["AGENTMEMORY_LLM_SERIALIZE"] === "false" && !process.env["AGENTMEMORY_LLM_LOCK_FILE"]
     ? baseProvider
     : new SerializedMemoryProvider(baseProvider);
 
