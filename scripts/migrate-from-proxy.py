@@ -215,6 +215,9 @@ def prior_data_directory(proxy_root: Path, values: dict[str, str]) -> Path:
 
 
 def under_path(child: Path, parent: Path) -> bool:
+    # macOS exposes /var via /private/var; both operands must use the same namespace.
+    child = child.resolve()
+    parent = parent.resolve()
     return child == parent or parent in child.parents
 
 
