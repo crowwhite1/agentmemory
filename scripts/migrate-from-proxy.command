@@ -1,5 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
+# Migration tests import Python helpers; never dirty the checkout with bytecode.
+export PYTHONDONTWRITEBYTECODE=1
 cd "$(dirname "$0")/.."
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "This migration supports macOS only." >&2
