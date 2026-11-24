@@ -65,10 +65,12 @@ export async function auditCompression(kv: StateKV, filter = "unverified", offse
   const summaryIssues: Array<{ sessionId: string; status: SummaryState; observations: number; covered: number | null;
     repairScheduled: boolean; repairAttempts: number | null }> = [];
   let summaryIssueCount = 0;
+  sessions.sort((a, b) => String(a?.id ?? "").localeCompare(String(b?.id ?? "")));
   for (const session of sessions) {
     if (!session || typeof session.id !== "string" || !session.id || sessionIds.has(session.id)) { invalidSessions++; continue; }
     sessionIds.add(session.id);
     const rows = await collectAll<StoredObservation>(kv, KV.observations(session.id));
+    rows.sort((a, b) => String(a?.id ?? "").localeCompare(String(b?.id ?? "")));
     const valid: StoredObservation[] = [];
     let summaryInvalid = false;
     if (typeof session.observationCount === "number" && session.observationCount !== rows.length) observationCountMismatch++;

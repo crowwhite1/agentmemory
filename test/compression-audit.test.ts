@@ -33,7 +33,7 @@ describe("read-only compression audit", () => {
       sourceUnavailable:1,retryableUnqueued:2,knownFailuresFound:3,missingReferenceCount:1,
       knownFailureStates:{complete:1,legacy:1,failed:1},summaryTotals:{stale:1},
       historicalCalls:[{failureCount:2014}],matched:3});
-    expect(report.items.map(x=>x.observationId)).toEqual(["done","legacy","failed"]);
+    expect(report.items.map(x=>x.observationId)).toEqual(["done","failed","legacy"]);
     expect(kv.set).not.toHaveBeenCalled();expect(kv.delete).not.toHaveBeenCalled();
     expect(JSON.stringify(report)).not.toContain("toolOutput");
   });
