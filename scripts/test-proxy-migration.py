@@ -56,7 +56,7 @@ class MigrationConfigTests(unittest.TestCase):
             (old / "data").mkdir()
             (old / "data" / "state_store.db").touch()
             resolved = migration.prior_data_directory(old, {})
-            self.assertEqual(resolved, old / "data")
+            self.assertEqual(resolved, (old / "data").resolve())
             self.assertTrue(migration.under_path(resolved, old))
 
     def test_explicit_absolute_state_location_has_precedence(self):
@@ -66,8 +66,23 @@ class MigrationConfigTests(unittest.TestCase):
             external = old.parent / "a-separate-agentmemory-state"
             self.assertEqual(
                 migration.prior_data_directory(old, {"AGENTMEMORY_DATA_DIR": str(external)}),
-                external,
+                external.resolve(),
             )
+
+    def test_path_containment_accepts_symlink_aliases(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            real = root / "private" / "var"
+            real.mkdir(parents=True)
+            alias = root / "var"
+            alias.symlink_to(real, target_is_directory=True)
+            data = real / "data"
+            data.mkdir()
+            self.assertTrue(migration.under_path(data.resolve(), alias))
+            self.assertTrue(migration.under_path(alias / "data", real))
+            self.assertTrue(migration.under_path(alias, real))
+            self.assertFalse(migration.under_path(root / "other", alias))
 
     def test_hooks_change_only_agentmemory_commands(self):
         original = '{"hooks": [{"command": "AGENTMEMORY_URL=http://127.0.0.1:3112 npx agentmemory"}, {"command": "curl http://127.0.0.1:3112"}]}'
