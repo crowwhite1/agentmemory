@@ -430,7 +430,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project")
     parser.add_argument("--existing-data-dir", help="Register a verified, offline single-project legacy directory on instance 0")
-    parser.add_argument("action", choices=["register", "start", "stop", "restart", "status", "list", "codex", "mcp", "hook"])
+    parser.add_argument("action", choices=["register", "start", "stop", "restart", "status", "list", "codex", "codex-auto", "mcp", "hook"])
     parser.add_argument("args", nargs=argparse.REMAINDER)
     opts = parser.parse_args()
     if opts.existing_data_dir and opts.action != "register":
@@ -439,6 +439,22 @@ def main():
         if len(opts.args) != 1:
             parser.error("Specify a native hook name")
         sys.exit(run_hook(opts.args[0]))
+    if opts.action == "codex-auto":
+        args = opts.args[1:] if opts.args[:1] == ["--"] else opts.args
+        real = os.environ.get("AGENTMEMORY_REAL_CODEX") or shutil.which("codex")
+        if not real:
+            raise RuntimeError("Codex CLI not found.")
+        passthrough = bool(args and args[0] in ("--version", "-V", "--help", "-h",
+            "help", "login", "logout", "mcp", "completion", "features", "plugin"))
+        if not passthrough:
+            try:
+                project_root(opts.project or os.getcwd())
+            except RuntimeError:
+                passthrough = True
+        if passthrough:
+            os.execvpe(real, [real, *args], os.environ.copy())
+        opts.action = "codex"
+        opts.args = args
     if opts.action != "codex" and opts.args:
         parser.error("Unexpected extra arguments")
     if opts.action == "mcp":

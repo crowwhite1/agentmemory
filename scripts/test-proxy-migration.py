@@ -148,6 +148,15 @@ class MigrationConfigTests(unittest.TestCase):
         text = "AGENTMEMORY_DATA_DIR=/old\nIII_REST_PORT=3111\nOPENAI_MODEL=qwen\n"
         self.assertEqual(migration.without_runtime_values(text), "OPENAI_MODEL=qwen\n")
 
+    def test_codex_shell_block_idempotent_and_keeps_custom_alias(self):
+        original = 'export OTHER=1\n'
+        first = migration.shell_config(original, "/bin/codex")
+        second = migration.shell_config(first, "/bin/codex")
+        self.assertEqual(first, second)
+        self.assertIn('export OTHER=1', first)
+        self.assertEqual(first.count(migration.SHELL_BEGIN), 1)
+        self.assertIsNone(migration.shell_config('alias codex="mycustom"\n', "/bin/codex"))
+
     def test_hooks_change_only_agentmemory_commands(self):
         original = '{"hooks": [{"command": "AGENTMEMORY_URL=http://127.0.0.1:3112 npx agentmemory"}, {"command": "curl http://127.0.0.1:3112"}]}'
         result = migration.update_hooks(original)

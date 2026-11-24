@@ -29,6 +29,9 @@ if [[ -z "$PYTHON" ]]; then
   echo "Python 3.11+ not found. Install it before attempting migration." >&2
   exit 1
 fi
+if [[ "${1:-}" == "--inspect" ]]; then
+  exec "$PYTHON" scripts/migrate-from-proxy.py --inspect
+fi
 npm install --legacy-peer-deps --no-audit --no-fund
 npm run build
 npm run skills:gen

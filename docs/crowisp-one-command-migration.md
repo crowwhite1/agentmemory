@@ -41,3 +41,18 @@ historical mixed stores. Backups remain under
 `~/.agentmemory/migration-backups`.
 
 For project management see [project-isolated-memory.md](project-isolated-memory.md).
+
+The installer creates `~/.local/bin/agentmemory-projects` and, when Codex CLI
+is on PATH, `~/.local/bin/codex-memory`. Existing regular bash/zsh startup
+files receive an idempotent project-aware `codex` shell function; existing
+custom aliases/functions and symlinked startup files are not overwritten.
+Open a new terminal to activate it. Outside a Git project and for non-session
+commands (login, help, version), Codex launches normally; no project is guessed.
+Workspace-changing flags and resume/fork remain unsupported by the pinned
+CLI launcher. The Control.app starts the migrated Viewer on demand.
+
+Read-only preflight without a full npm build (updates the fork checkout only):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/crowwhite1/agentmemory/main/scripts/bootstrap-crowisp.command | zsh -s -- --inspect
+```
