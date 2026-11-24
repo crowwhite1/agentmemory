@@ -168,7 +168,7 @@ button{border:1px solid #5b6380;color:var(--text);background:#313b52;border-radi
   }
   const queueStatusLabels={pending:"Ожидает",running:"Выполняется",exhausted:"Попытки исчерпаны",retry_scheduled:"Назначен повтор",not_retryable:"Повтор недоступен"};
   const queueErrors={compression_failed:"Ошибка компрессии",parse_failed:"Не удалось разобрать ответ модели",validation_failed:"Ответ модели не прошёл проверку",source_unavailable:"Исходные данные недоступны",dispatch_failed:"Не удалось поставить в очередь",compression_timeout:"Истёк таймаут компрессии",provider_failure:"Ошибка поставщика LLM",queue_processing_failed:"Ошибка обработки очереди",invalid_raw_observation:"Некорректное наблюдение",invalid_observation_identity:"Некорректный идентификатор"};
-  const retryReasons={observation_missing:"Исходная запись observation отсутствует",identity_mismatch:"Идентификаторы исходной записи не совпадают",not_failed:"Запись уже обработана или не требует компрессии",source_unavailable:"Нет сохранённых исходных данных для повторной компрессии",already_queued:"Задача уже в очереди или выполняется"};
+  const retryReasons={observation_missing:"Исходная запись observation отсутствует",identity_mismatch:"Идентификаторы исходной записи не совпадают",not_failed:"Запись не требует компрессии; состояние не подтверждено",already_complete:"Компрессия уже завершена",legacy_no_compression_state:"Старая запись без метаданных компрессии; успех LLM не подтверждён",source_unavailable:"Нет сохранённых исходных данных для повторной компрессии",already_queued:"Задача уже в очереди или выполняется"};
   const errorLabel=(code)=>code?(queueErrors[code]||"Ошибка")+" ("+code+")":"";
   const dateLabel=(value)=>{const date=new Date(value);return value&&Number.isFinite(date.getTime())?date.toLocaleString():"Время неизвестно";};
   let retryVisible=[], legacyCursor=null, jobOffset=0, queueBusy=false, queueLoading=false;
@@ -233,6 +233,9 @@ button{border:1px solid #5b6380;color:var(--text);background:#313b52;border-radi
       if(cursor){const first=makeText("button","Сначала");first.addEventListener("click",()=>loadQueue(null,jobOffset));pages.append(first);}
       if(body.nextCursor){const next=makeText("button","Следующая страница старых ошибок");next.addEventListener("click",()=>loadQueue(body.nextCursor,jobOffset));pages.append(next);}
       area.append(pages);
+      const archived=queueGroup(area,"Архив неактуальных задач","Последние "+body.archiveLimit+" задач, снятых с очереди при сверке с состоянием observations. Это не новые сбои и не обязательно успешная генерация. Память сохранена.");
+      if(!body.archived.length)archived.append(makeText("p","Архив пуст"));
+      for(const item of body.archived)queueRow(archived,item,retryReasons[item.reason]||item.reason,"Снята с очереди: "+dateLabel(item.archivedAt)+" · Попыток ранее: "+item.attempts+(item.lastError?" · Предыдущая ошибка: "+errorLabel(item.lastError):""),false);
       const history=queueGroup(area,"Журнал неудачных попыток","Последние "+body.historyLimit+" сбоев после установки обновления. Сохраняются и после успешного повтора; старые записи не реконструируются.");
       if(!body.history.length)history.append(makeText("p","Новых сбоев пока нет"));
       for(const item of body.history)queueRow(history,item,errorLabel(item.error),"Попытка "+item.attempt+" · "+dateLabel(item.at)+" · "+(queueStatusLabels[item.outcome]||item.outcome),false);

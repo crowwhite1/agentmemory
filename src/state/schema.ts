@@ -9,6 +9,7 @@ export const KV = {
   summaryRepairs: "mem:summary:repairs",
   compressionQueue: "mem:compression:queue",
   compressionQueueHistory: "mem:compression:queue-history",
+  compressionQueueArchive: "mem:compression:queue-archive",
   config: "mem:config",
   metrics: "mem:metrics",
   health: "mem:health",

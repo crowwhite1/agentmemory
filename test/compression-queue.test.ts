@@ -164,17 +164,73 @@ describe("StateKV compression queue", () => {
       expect(await worker.inspect()).toMatchObject({ jobs: [
         { observationId: "missing", retryable: false, retryBlocked: "observation_missing" },
         { observationId: "source-less", retryable: false, retryBlocked: "source_unavailable" },
-        { observationId: "complete", retryable: false, retryBlocked: "not_failed" },
+        { observationId: "complete", retryable: false, retryBlocked: "already_complete" },
         { observationId: "recoverable", retryable: true },
       ] });
       expect(await worker.retry({items: ids.map(observationId => ({sessionId: raw.sessionId, observationId}))})).toMatchObject({
-        accepted: 1, results: [{outcome: "observation_missing"}, {outcome: "source_unavailable"}, {outcome: "not_failed"}, {outcome: "queued"}],
+        accepted: 1, results: [{outcome: "observation_missing"}, {outcome: "source_unavailable"}, {outcome: "already_complete"}, {outcome: "queued"}],
       });
       expect(sdk.trigger).not.toHaveBeenCalled();
       expect(bucket(KV.compressionQueue).size).toBe(4);
       expect(bucket(KV.compressionQueue).get(compressionQueueKey(raw.sessionId, "recoverable"))).toMatchObject({status:"pending", attempts:0});
       expect(bucket(KV.compressionQueue).get(compressionQueueKey(raw.sessionId, "recoverable"))).not.toHaveProperty("lastError");
       expect(bucket(KV.observations(raw.sessionId)).get("source-less")).toMatchObject({compression});
+    } finally { worker.stop(); }
+  });
+
+  it("archives obsolete exhausted jobs at recovery without touching observations or invoking the model", async () => {
+    const { kv, sdk, bucket, raw } = rig();
+    const observationBucket = bucket(KV.observations(raw.sessionId));
+    observationBucket.delete(raw.id);
+    const summary = { ...raw, title: "Existing summary" };
+    const done = { ...summary, id: "done", compression: { status: "complete", revision: "r", attempts: 2 } };
+    const legacy = { ...summary, id: "legacy" };
+    const failed = { ...summary, id: "failed", compression: { status: "failed", revision: "r", attempts: 2 } };
+    for (const row of [done, legacy, failed]) observationBucket.set(row.id, row);
+    for (const observationId of ["done", "legacy", "failed", "missing"]) {
+      const id = compressionQueueKey(raw.sessionId, observationId);
+      bucket(KV.compressionQueue).set(id, { id, sessionId: raw.sessionId, observationId,
+        status: "exhausted", enqueuedAt: 1, dueAt: 0, attempts: 2, lastError: "parse_failed" });
+    }
+    const before = structuredClone([...observationBucket.entries()]);
+    const worker = registerCompressionQueue(sdk as never, kv as never);
+    try {
+      await worker.drain();
+      expect(sdk.trigger).not.toHaveBeenCalled();
+      expect([...observationBucket.entries()]).toEqual(before);
+      expect((await worker.status()).exhausted).toBe(2);
+      expect((await worker.status()).completedSinceStart).toBe(0);
+      expect((await worker.status()).failuresSinceStart).toBe(0);
+      expect(await worker.inspect()).toMatchObject({
+        archived: expect.arrayContaining([
+          expect.objectContaining({observationId:"done", reason:"already_complete", lastError:"parse_failed"}),
+          expect.objectContaining({observationId:"legacy", reason:"legacy_no_compression_state", lastError:"parse_failed"}),
+        ]),
+        jobs: expect.arrayContaining([expect.objectContaining({observationId:"failed"}),expect.objectContaining({observationId:"missing"})]),
+      });
+    } finally { worker.stop(); }
+    const restarted = registerCompressionQueue(sdk as never, kv as never);
+    try {
+      await restarted.drain();
+      expect(await restarted.inspect()).toMatchObject({archived: expect.arrayContaining([
+        expect.objectContaining({observationId:"done"}), expect.objectContaining({observationId:"legacy"}),
+      ])});
+      expect(bucket(KV.compressionQueueArchive).get("recent")).toHaveLength(2);
+    } finally { restarted.stop(); }
+  });
+
+  it("does not remove an obsolete job if writing its archive fails", async () => {
+    const { kv, sdk, bucket, raw } = rig();
+    bucket(KV.observations(raw.sessionId)).set(raw.id, {...raw, title:"Existing summary"});
+    const id = compressionQueueKey(raw.sessionId, raw.id);
+    const job = {id, sessionId:raw.sessionId, observationId:raw.id, status:"exhausted", attempts:2, enqueuedAt:1, dueAt:0, lastError:"parse_failed"};
+    bucket(KV.compressionQueue).set(id,job);
+    kv.set.mockRejectedValueOnce(new Error("archive storage unavailable"));
+    const worker = registerCompressionQueue(sdk as never, kv as never);
+    try {
+      await worker.drain();
+      expect(bucket(KV.compressionQueue).get(id)).toEqual(job);
+      expect(sdk.trigger).not.toHaveBeenCalled();
     } finally { worker.stop(); }
   });
 

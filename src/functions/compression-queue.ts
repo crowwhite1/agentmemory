@@ -15,6 +15,9 @@ const JOB_BATCH = 64;
 const HISTORY_LIMIT = 200;
 const JOB_PAGE_SIZE = 100;
 const LEGACY_PAGE_SIZE = 50;
+const ARCHIVE_LIMIT = 200;
+type ArchiveReason = "already_complete" | "legacy_no_compression_state";
+type ArchivedJob = CompressionQueueJob & { archivedAt: number; reason: ArchiveReason };
 type Failure = CompressionIdentity & { at: number; attempt: number; error: string; outcome: "retry_scheduled" | "exhausted" | "not_retryable" };
 
 const safeErrors = new Set(["compression_failed", "parse_failed", "validation_failed", "source_unavailable",
@@ -139,10 +142,58 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
     }
   }
 
+  function obsoleteReason(row: StoredObservation | null | undefined, identity: CompressionIdentity): ArchiveReason | undefined {
+    if (!row || row.id !== identity.observationId || row.sessionId !== identity.sessionId ||
+        needsCompression(row) || !("title" in row) || typeof row.title !== "string" || !row.title.trim()) return undefined;
+    if (row.compression?.status === "complete") return "already_complete";
+    // Older/synthetic summaries can have no compression metadata. This is
+    // NOT evidence of successful LLM processing, only absence of requested work.
+    if (row.compression === undefined) return "legacy_no_compression_state";
+    return undefined;
+  }
+
+  async function archivedJobs(): Promise<ArchivedJob[]> {
+    const rows = await kv.get<ArchivedJob[]>(KV.compressionQueueArchive, "recent");
+    return Array.isArray(rows) ? rows.slice(0, ARCHIVE_LIMIT).map(row => ({
+      ...row, ...(row.lastError ? { lastError: safeError(row.lastError) } : {}),
+    })) : [];
+  }
+
+  async function reconcileExhausted(): Promise<void> {
+    const jobs = await kv.list<CompressionQueueJob>(KV.compressionQueue);
+    for (const candidate of jobs) {
+      if (stopped) return;
+      if (!candidate || candidate.status !== "exhausted" || active.has(candidate.id)) continue;
+      await withKeyedLock(`compression-queue:${candidate.id}`, async () => {
+        if (active.has(candidate.id)) return;
+        const job = await kv.get<CompressionQueueJob>(KV.compressionQueue, candidate.id);
+        if (!job || job.status !== "exhausted" ||
+            job.id !== compressionQueueKey(job.sessionId, job.observationId)) return;
+        await withKeyedLock(`obs:${job.sessionId}`, async () => {
+          const row = await kv.get<StoredObservation>(KV.observations(job.sessionId), job.observationId);
+          const reason = obsoleteReason(row, job);
+          if (!reason) return;
+          // Persist the original queue metadata first. If archival fails,
+          // leave the queue untouched. A crash between set/delete is idempotent.
+          await withKeyedLock("compression-queue-archive", async () => {
+            const previous = await archivedJobs();
+            if (!previous.some(item => item.id === job.id && item.enqueuedAt === job.enqueuedAt &&
+                item.attempts === job.attempts && item.reason === reason)) {
+              const entry: ArchivedJob = { ...job, archivedAt: Date.now(), reason,
+                ...(job.lastError ? { lastError: safeError(job.lastError) } : {}) };
+              await kv.set(KV.compressionQueueArchive, "recent", [entry, ...previous].slice(0, ARCHIVE_LIMIT));
+            }
+          });
+          await kv.delete(KV.compressionQueue, job.id);
+        });
+      });
+    }
+  }
+
   function retryBlock(row: StoredObservation | null | undefined, identity: CompressionIdentity): string | undefined {
     if (!row) return "observation_missing";
     if (row.id !== identity.observationId || row.sessionId !== identity.sessionId) return "identity_mismatch";
-    if (!needsCompression(row)) return "not_failed";
+    if (!needsCompression(row)) return obsoleteReason(row, identity) ?? "not_failed";
     if (!compressionRaw(row)) return "source_unavailable";
     return undefined;
   }
@@ -199,6 +250,7 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
     }
     return { status: await status(), settings, jobs: visibleJobs, totalJobs: jobs.length, jobOffset: offset, jobPageSize: JOB_PAGE_SIZE,
       legacy, history: await history(), historyLimit: HISTORY_LIMIT,
+      archived: await archivedJobs(), archiveLimit: ARCHIVE_LIMIT,
       nextCursor: more && anchor ? Buffer.from(JSON.stringify(anchor)).toString("base64url") : null };
   }
 
@@ -302,6 +354,7 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
     try {
       if (Date.now() >= backfillAt) {
         backfillAt = Date.now() + backfillMs;
+        await reconcileExhausted();
         await recoverFromObservations();
       }
       const jobs = await kv.list<CompressionQueueJob>(KV.compressionQueue);
