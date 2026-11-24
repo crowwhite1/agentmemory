@@ -71,3 +71,15 @@ including native hook capture and recall, distinct state directories and
 ports, stop/restart, and non-overlapping LM Studio requests. The launcher
 provides CLI management and links to per-instance settings; a unified viewer
 and automatic Desktop/legacy migration are not implemented here.
+
+## Project-aware MCP and capture entrypoints
+
+`project-memory.py --project /absolute/repo mcp` pins an explicit project for
+CLI sessions. `project-memory.py mcp` without a project negotiates MCP
+`roots/list` with a capable client (e.g. a Desktop host), accepts only local
+Git workspace paths, and refuses ambiguous or absent roots. A workspace change
+requires reconnecting. The launcher never guesses the workspace from the
+MCP subprocess cwd. Native hook dispatch uses the event's cwd/workspace roots
+and binds the session ID to its initial project; conflicts are rejected.
+The global Codex config migration has not yet installed these entrypoints.
+Validate actual Desktop roots support before relying on Desktop MCP tools.
