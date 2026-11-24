@@ -6,7 +6,8 @@ describe("local Viewer compression queue controls", () => {
   it("reads the selected worker and requires same-origin POST for retry", async () => {
     const inspect = vi.fn(async () => ({ jobs: [], history: [] }));
     const retry = vi.fn(async () => ({ accepted: 1 }));
-    const server = startViewerServer(0, {}, {}, undefined, 0, { inspect, retry });
+    const audit = vi.fn(async () => ({ observations: 5 }));
+    const server = startViewerServer(0, {}, {}, undefined, 0, { inspect, retry, audit });
     await new Promise<void>(resolve => server.once("listening", resolve));
     const { port } = server.address() as AddressInfo;
     const base = `http://127.0.0.1:${port}`;
@@ -16,6 +17,10 @@ describe("local Viewer compression queue controls", () => {
       expect(get.status).toBe(200);
       expect(await get.json()).toMatchObject({ jobs: [], history: [] });
       expect(inspect).toHaveBeenCalledWith(undefined, 100);
+      const report = await fetch(base + "/settings/queue/audit?filter=known_failure&offset=100");
+      expect(report.status).toBe(200);
+      expect(await report.json()).toEqual({ observations: 5 });
+      expect(audit).toHaveBeenCalledWith("known_failure", 100);
       for (const origin of [undefined, "https://example.org"]) {
         const res = await fetch(base + "/settings/queue/retry", {
           method: "POST", headers: { "Content-Type": "application/json", ...(origin ? { Origin: origin } : {}) }, body,

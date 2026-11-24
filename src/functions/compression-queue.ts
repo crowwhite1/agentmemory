@@ -6,6 +6,7 @@ import type { Session, CompressionQueueJob, CompressionQueueStatus } from "../ty
 import { logger } from "../logger.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
 import { readCompressionQueueSettings } from "./compression-queue-config.js";
+import { auditCompression } from "./compression-audit.js";
 
 type CompressionResult = { success?: boolean; skipped?: boolean; retryable?: boolean; error?: string };
 type CompressionIdentity = { sessionId: string; observationId: string };
@@ -55,6 +56,7 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
   status(): Promise<CompressionQueueStatus>;
   inspect(cursor?: string, offset?: number): Promise<unknown>;
   retry(input: unknown): Promise<unknown>;
+  audit(filter?: string, offset?: number): Promise<unknown>;
 } {
   let stopped = false;
   let started = false;
@@ -411,5 +413,6 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
     status,
     inspect,
     retry,
+    audit: (filter, offset) => auditCompression(kv, filter, offset),
   };
 }

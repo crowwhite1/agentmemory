@@ -214,7 +214,7 @@ export function startViewerServer(
   _sdk: unknown,
   secret?: string,
   restPort?: number,
-  compressionQueue?: Pick<ReturnType<typeof registerCompressionQueue>, "inspect" | "retry">,
+  compressionQueue?: Pick<ReturnType<typeof registerCompressionQueue>, "inspect" | "retry" | "audit">,
 ): Server {
   // Reset exported runtime state for each start attempt.
   boundViewerPort = null;
@@ -313,7 +313,7 @@ export function startViewerServer(
       return;
     }
 
-    if (pathname === "/settings/queue" || pathname === "/settings/queue/retry") {
+    if (pathname === "/settings/queue" || pathname === "/settings/queue/retry" || pathname === "/settings/queue/audit") {
       if (!isLoopbackHost(host)) {
         json(res, 403, { error: "Queue control is available only on a loopback viewer." }, req);
         return;
@@ -324,6 +324,11 @@ export function startViewerServer(
         return;
       }
       try {
+        if (method === "GET" && pathname === "/settings/queue/audit") {
+          const query = new URLSearchParams(qs);
+          json(res, 200, await compressionQueue.audit(query.get("filter") || "unverified", Number(query.get("offset") || 0)), req);
+          return;
+        }
         if (method === "GET" && pathname === "/settings/queue") {
           const query = new URLSearchParams(qs);
           const cursor = query.get("cursor") || undefined;

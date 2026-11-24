@@ -33,6 +33,7 @@ button{border:1px solid #5b6380;color:var(--text);background:#313b52;border-radi
 <p>Изменения записываются локально в <code>~/.agentmemory/.env</code> (или заданный AGENTMEMORY_ENV_FILE). <strong>Они вступят в силу после перезапуска AgentMemory.</strong> Текущие LLM-запросы не прерываются.</p>
 <p>Секреты не отображаются в интерфейсе и никогда не возвращаются API. Страница не опрашивает сервер по таймеру: данные загружаются при открытии и по нажатию «Обновить».</p></div>
 <section class="section" id="projects-section" hidden><div class="toolbar"><h2>Проекты и экземпляры</h2><button id="projects-reload">Обновить проекты</button></div><p>Отдельное хранилище и очередь для каждого проекта. Состояние обновляется только вручную.</p><div id="projects" aria-live="polite">Загрузка…</div><p id="project-notice" role="status"></p></section>
+<section class="section" id="audit-section"><div class="toolbar"><h2>Проверка полноты обработки памяти</h2><button id="audit-run">Проверить всю память проекта</button></div><p>Сверка всех зарегистрированных сессий и observations, включая записи вне очереди. Только чтение, без запросов к LLM. Накопительные ошибки Health не равны числу необработанных записей.</p><div id="audit-result" aria-live="polite"></div></section>
 <section class="section" id="queue-section"><div class="toolbar"><h2>Очередь компрессии текущего проекта</h2><button id="queue-refresh">Обновить очередь</button><button id="queue-retry-visible" disabled>Повторить ошибки на странице</button></div><p>Повтор ставит observation в очередь с новым лимитом попыток. Исходная память не удаляется. Для других проектов откройте их настройки.</p><p id="queue-notice" role="status" class="queue-notice"></p><div id="queue-content" aria-live="polite">Загрузка…</div></section>
 <div class="toolbar"><input type="search" id="search" placeholder="Поиск параметров и описаний…" aria-label="Поиск настроек"><button id="reload">Обновить</button><span id="count"></span></div>
 <div id="settings" aria-live="polite">Загрузка…</div>
@@ -243,6 +244,49 @@ button{border:1px solid #5b6380;color:var(--text);background:#313b52;border-radi
     }catch(error){area.textContent="Не удалось получить очередь: "+error.message;}
     finally{queueLoading=false;el("queue-refresh").disabled=false;}
   }
+  const auditLabels={complete:"LLM-компрессия подтверждена",legacy:"Старая запись без статуса",failed:"Ошибка",pending:"Ожидает компрессии",raw:"Сырая запись",unknown:"Неизвестное состояние"};
+  const summaryAuditLabels={current:"Актуальна",stale:"Устарела / обработка не завершена",legacy_unverified:"Нет контрольного отпечатка",missing:"Отсутствует",active:"Активная сессия",empty:"Пустая сессия",unknown:"Не удалось проверить"};
+  let auditBusy=false;
+  async function runAudit(filter="unverified",offset=0){
+    if(auditBusy)return;
+    auditBusy=true;el("audit-run").disabled=true;
+    const area=el("audit-result");area.textContent="Сверка всей базы проекта…";
+    try{
+      const params=new URLSearchParams({filter,offset:String(offset)});
+      const r=await fetch("/settings/queue/audit?"+params,{cache:"no-store"});const a=await r.json();
+      if(!r.ok)throw new Error(a.error||"HTTP "+r.status);
+      area.replaceChildren();
+      area.append(makeText("p","Проверено сессий: "+a.sessions+"; observations: "+a.observations+". Завершено: "+dateLabel(a.finishedAt)+". Это состояние на момент сканирования, не атомарный снимок."));
+      const stats=document.createElement("div");stats.className="queue-summary";
+      for(const [key,label] of Object.entries(auditLabels)){
+        const stat=document.createElement("div");stat.className="queue-stat";stat.append(makeText("strong",String(a.totals[key])),makeText("small",label));stats.append(stat);
+      }
+      area.append(stats,makeText("p","Требуют обработки, но нет источника: "+a.sourceUnavailable+" · Есть источник, но нет задачи: "+a.retryableUnqueued+" · Несопоставленные задачи: "+a.unmatchedQueue+" · Несовпадение счётчика observations в сессиях: "+a.observationCountMismatch+" · Некорректные записи: "+(a.invalidSessions+a.invalidObservations)));
+      const known=queueGroup(area,"Результат по известным ошибкам","Уникальные записи, сопоставленные с текущей очередью, доступным журналом и архивом, либо имеющие статус failed. Старые ошибки Health без идентификаторов восстановить по счётчикам невозможно.");
+      known.append(makeText("p","Найдено: "+a.knownFailuresFound+" · "+Object.entries(a.knownFailureStates).map(([key,n])=>auditLabels[key]+": "+n).join(" · ")));
+      known.append(makeText("p","Ссылок на записи вне проверенных сессий: "+a.missingReferenceCount));
+      for(const item of a.missingReferences)known.append(makeText("small",item.observationId+" · "+item.sessionId));
+      const controls=document.createElement("div");controls.className="toolbar";
+      const select=document.createElement("select");
+      for(const [key,label] of [["unverified","Все без подтверждения LLM"],["known_failure","Известные ошибки"],["all","Все observations"],...Object.entries(auditLabels)]){
+        const option=document.createElement("option");option.value=key;option.textContent=label;select.append(option);
+      }
+      select.value=filter;select.addEventListener("change",()=>runAudit(select.value,0));controls.append(select);
+      if(offset>0){const prev=makeText("button","Назад");prev.addEventListener("click",()=>runAudit(filter,Math.max(0,offset-100)));controls.append(prev);}
+      if(a.nextOffset!==null){const next=makeText("button","Далее");next.addEventListener("click",()=>runAudit(filter,a.nextOffset));controls.append(next);}
+      area.append(controls);
+      const records=queueGroup(area,"Реальные записи","Показано "+a.items.length+" из "+a.matched+" (смещение "+offset+"). Исторический сбой не меняет текущий статус.");
+      for(const item of a.items)queueRow(records,item,auditLabels[item.status],"Попыток: "+(item.attempts??"неизвестно")+" · Источник: "+(item.sourceAvailable?"есть":"нет")+" · Очередь: "+(item.queueStatus||"нет")+(item.knownFailure?" · Есть известный сбой":""),false);
+      const summaries=queueGroup(area,"Проверка суммаризации сессий","Проверяется покрытие observations по контрольному отпечатку. Активные и пустые сессии не считаются ошибками.");
+      summaries.append(makeText("p",Object.entries(a.summaryTotals).map(([key,n])=>summaryAuditLabels[key]+": "+n).join(" · ")));
+      summaries.append(makeText("p","Задач восстановления summary: "+a.summariesWithRepairs+" · Показано проблемных сессий: "+a.summaryIssues.length+" из "+a.summaryIssueCount));
+      for(const item of a.summaryIssues)summaries.append(makeText("p",item.sessionId+" · "+summaryAuditLabels[item.status]+" · observations: "+item.observations+" · покрыто: "+(item.covered??"неизвестно")+" · восстановление: "+(item.repairScheduled?"в очереди":"нет")));
+      const historical=queueGroup(area,"Исторические счётчики Health","Количество вызовов, а не уникальных записей. Ошибка остаётся в статистике даже после успешного повтора.");
+      for(const item of a.historicalCalls)historical.append(makeText("p",item.functionId+": "+item.failureCount+" ошибок из "+item.totalCalls+" вызовов"));
+    }catch(error){area.textContent="Не удалось завершить проверку всей базы: "+error.message;}
+    finally{auditBusy=false;el("audit-run").disabled=false;}
+  }
+  el("audit-run").addEventListener("click",()=>runAudit());
   el("queue-refresh").addEventListener("click",()=>loadQueue(legacyCursor,jobOffset));
   el("queue-retry-visible").addEventListener("click",()=>retryQueue(retryVisible.slice()));
   loadQueue();
