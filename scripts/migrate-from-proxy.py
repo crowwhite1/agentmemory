@@ -198,7 +198,7 @@ def state_databases() -> list[Path]:
     paths: set[Path] = set()
     for root in roots:
         for candidate in [root / "state_store.db", root / "data" / "state_store.db"]:
-            if candidate.is_file():
+            if candidate.is_file() or candidate.is_dir():
                 paths.add(candidate.resolve())
     return sorted(paths)
 
@@ -209,9 +209,64 @@ def prior_data_directory(proxy_root: Path, values: dict[str, str]) -> Path:
         candidate = Path(explicit).expanduser()
         return (candidate if candidate.is_absolute() else proxy_root / candidate).resolve()
     legacy = (proxy_root / "data").resolve()
-    if (legacy / "state_store.db").is_file() or (legacy / "iii-config.yaml").is_file():
+    if (legacy / "state_store.db").exists() or (legacy / "iii-config.yaml").is_file():
         return legacy
     return (HOME / "Library" / "Application Support" / "agentmemory").resolve()
+
+
+def live_data_directory(metadata: Path) -> Path:
+    """Resolve the managed Compose store, never guess from cwd or another existing DB."""
+    try:
+        state = json.loads(metadata.read_text())
+        if state.get("kind") != "compose" or state.get("restPort") != 3111:
+            raise MigrationError("Unsupported active runtime metadata; inspect before migration")
+        compose = Path(state["file"]).resolve(strict=True)
+        data = compose.parent.parent
+        if compose != data / "compose" / "worker-compose.yaml":
+            raise MigrationError("Unexpected managed Compose file path")
+        if Path(state["stateDir"]).resolve() != data / "compose-state":
+            raise MigrationError("Compose stateDir does not match configured data directory")
+        config = compose.read_text()
+        # The generated YAML has a single file_based StateKV path. Refuse
+        # customized layouts rather than infer the storage from a filename.
+        methods = re.findall(r"(?m)^\s*store_method:\s*([^\n]+)$", config)
+        paths = re.findall(r"(?m)^\s*file_path:\s*([^\n]+)$", config)
+        expected = data / "state_store.db"
+        if len(methods) != 1 or methods[0].strip("'\" ") != "file_based" or len(paths) != 1:
+            raise MigrationError("Active Compose does not use the expected file_based store")
+        raw = paths[0].strip()
+        if raw.startswith("'") and raw.endswith("'"):
+            raw = raw[1:-1].replace("''", "'")
+        elif raw.startswith('"'):
+            raw = json.loads(raw)
+        if not Path(raw).is_absolute() or Path(raw).resolve() != expected.resolve():
+            raise MigrationError("StateKV file_path does not match managed data directory")
+        if not expected.exists():
+            found = ", ".join(str(p) for p in state_databases()) or "none"
+            raise MigrationError(
+                f"Active StateKV path is missing: {expected}. Other stores: {found}. "
+                "No substitution is safe; inspect the live worker before retrying."
+            )
+        return data
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise MigrationError(f"Cannot validate active Compose metadata {metadata}: {exc}") from exc
+
+
+def snapshot_state_store(source: Path, backup: Path) -> None:
+    """Only call after the owning engine is stopped for a directory store."""
+    if source.is_symlink():
+        raise MigrationError(f"Refusing to snapshot symlinked StateKV store: {source}")
+    if source.is_dir():
+        # A StateKV directory is not SQLite. Copy all files, including
+        # engine metadata/WAL, only while the owning process is offline.
+        if any(p.is_symlink() for p in source.rglob("*")):
+            raise MigrationError(f"StateKV contains symlinks: {source}")
+        shutil.copytree(source, backup)
+        backup.chmod(0o700)
+    elif source.is_file():
+        snapshot_sqlite(source, backup)
+    else:
+        raise MigrationError(f"StateKV store does not exist: {source}")
 
 
 def under_path(child: Path, parent: Path) -> bool:
@@ -396,11 +451,9 @@ def migrate() -> int:
     env = env_values(env_text)
     if env.get("AGENTMEMORY_STATE_BACKEND") == "redis":
         raise MigrationError("Redis backend needs a separate Redis snapshot; no changes made")
-    for idx, path in enumerate(state_databases()):
-        snapshot_sqlite(path, backup_dir / f"state-{idx}.sqlite")
     old_service = plistlib.loads(PROXY_PLIST.read_bytes())
     proxy_root = Path(old_service.get("WorkingDirectory", str(HOME / "life" / "agentmemory-proxy")))
-    previous_data = prior_data_directory(proxy_root, env)
+    previous_data = live_data_directory(HOME / ".agentmemory" / "engine-state.json")
     # If the old state lives under the proxy checkout, move a consistent copy
     # out of that checkout *after stopping the old engine* and before new start.
     relocate_data = under_path(previous_data, proxy_root.resolve())
@@ -412,12 +465,12 @@ def migrate() -> int:
             "the target is not empty. No service has been changed."
         )
     state_file = previous_data / "state_store.db"
-    if not state_file.is_file():
+    if not state_file.exists():
         raise MigrationError(
             f"Cannot locate the legacy AgentMemory state database at {state_file}. "
             "Refusing to cut over without a verified memory backup."
         )
-    snapshot_sqlite(state_file, backup_dir / "active-previous-state.sqlite")
+    # Directory StateKV snapshots must be taken after a clean shutdown.
     proxy_env_path = proxy_root / ".env"
     proxy_env = env_values(proxy_env_path.read_text() if proxy_env_path.is_file() else "")
     queue_path = Path(proxy_env.get("QUEUE_DB_PATH") or "queue.db").expanduser()
@@ -438,8 +491,9 @@ def migrate() -> int:
         "queue_path": str(queue_path), "proxy_root": str(proxy_root),
         "previous_data_dir": str(previous_data), "new_data_dir": str(next_data),
         "loaded": was_loaded,
+        "discovered_state_stores": [str(p) for p in state_databases()],
     }, indent=2) + "\n")
-    log(f"All configuration and databases backed up: {backup_dir}")
+    log(f"Configuration and proxy queue backed up: {backup_dir}; StateKV snapshot follows clean shutdown")
     legacy_cli = HOME / ".local" / "bin" / "agentmemory-proxy"
     legacy_cli_target = os.readlink(legacy_cli) if legacy_cli.is_symlink() else None
     retired_checkout = backup_dir / "agentmemory-proxy-retired"
@@ -471,6 +525,8 @@ def migrate() -> int:
         if stopped.returncode:
             raise MigrationError("Could not stop old iii worker cleanly: " + stopped.stderr[-700:])
         wait_old_worker_stopped()
+        snapshot_state_store(state_file, backup_dir / "active-previous-state.db")
+        log("Offline active StateKV backup completed")
         write_atomic(ENV_PATH, new_env)
         write_atomic(CODEX_TOML, new_codex)
         if new_hooks is not None:
@@ -577,7 +633,12 @@ def migrate() -> int:
 
 def main() -> int:
     try:
-        return migrate()
+        if "--inspect" in sys.argv[1:]:
+            active = live_data_directory(HOME / ".agentmemory" / "engine-state.json")
+            log(f"Verified active StateKV: {active / 'state_store.db'}")
+            log("Other discovered stores (not merged): " + ", ".join(str(p) for p in state_databases()))
+            return 0
+        raise MigrationError("Legacy single-store cutover is disabled pending project-aware migration. Use --inspect for read-only discovery.")
     except (MigrationError, OSError, ValueError, subprocess.SubprocessError, sqlite3.Error) as exc:
         log(f"ABORTED: {exc}")
         return 1
