@@ -7,7 +7,7 @@ capture spool and compression queue. The registry is outside repositories in
 registration of an existing verified single-project store. No databases are
 merged, copied, deleted or automatically adopted.
  
-Build the fork first (`npm ci && npm run build`). Python 3 with POSIX fcntl is
+Build the fork first (`npm install --legacy-peer-deps --no-audit --no-fund && npm run build`). Python 3 with POSIX fcntl is
 required. From a project directory:
  
 ```sh

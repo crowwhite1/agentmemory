@@ -1,5 +1,7 @@
 # One-command Crowisp AgentMemory migration (macOS)
 
+**Paused:** the legacy single-store cutover is disabled until project-aware migration is ready. The following describes the previous installer, not an instruction to run it. For read-only discovery use `python3 scripts/migrate-from-proxy.py --inspect`. A directory named `state_store.db` is an offline directory snapshot, not a SQLite database.
+
 From the user's Mac, with the previous managed AgentMemory Proxy stack installed:
 
 ```bash

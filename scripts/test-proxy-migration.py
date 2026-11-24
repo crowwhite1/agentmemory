@@ -84,6 +84,36 @@ class MigrationConfigTests(unittest.TestCase):
             self.assertTrue(migration.under_path(alias, real))
             self.assertFalse(migration.under_path(root / "other", alias))
 
+    def test_directory_store_snapshot_and_runtime_metadata(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            data = root / "data"
+            store = data / "state_store.db"
+            store.mkdir(parents=True)
+            (store / "record").write_text("memory")
+            compose = data / "compose" / "worker-compose.yaml"
+            compose.parent.mkdir()
+            compose.write_text(f"store_method: file_based\nfile_path: '{store}'\n")
+            metadata = root / "engine-state.json"
+            metadata.write_text(json.dumps({"kind": "compose", "restPort": 3111,
+                "file": str(compose), "stateDir": str(data / "compose-state")}))
+            self.assertEqual(migration.live_data_directory(metadata), data)
+            snapshot = root / "backup"
+            migration.snapshot_state_store(store, snapshot)
+            self.assertEqual((snapshot / "record").read_text(), "memory")
+            compose.write_text(f"store_method: file_based\nfile_path: '{root / 'other.db'}'\n")
+            with self.assertRaises(migration.MigrationError):
+                migration.live_data_directory(metadata)
+
+    def test_directory_store_is_detected_in_legacy_workdir(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "data" / "state_store.db").mkdir(parents=True)
+            self.assertEqual(migration.prior_data_directory(root, {}), (root / "data").resolve())
+
     def test_hooks_change_only_agentmemory_commands(self):
         original = '{"hooks": [{"command": "AGENTMEMORY_URL=http://127.0.0.1:3112 npx agentmemory"}, {"command": "curl http://127.0.0.1:3112"}]}'
         result = migration.update_hooks(original)
