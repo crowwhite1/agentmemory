@@ -114,6 +114,40 @@ class MigrationConfigTests(unittest.TestCase):
             (root / "data" / "state_store.db").mkdir(parents=True)
             self.assertEqual(migration.prior_data_directory(root, {}), (root / "data").resolve())
 
+    def test_project_codex_config_has_no_fixed_url(self):
+        original = '[mcp_servers.github]\ncommand="gh"\n[mcp_servers.agentmemory]\ncommand="npx"\n[mcp_servers.agentmemory.env]\nAGENTMEMORY_URL="http://127.0.0.1:3112"\n'
+        parsed = migration.tomllib.loads(migration.update_codex_toml(original, "/bin/npx", project_mode=True))
+        self.assertEqual(parsed["mcp_servers"]["github"]["command"], "gh")
+        server = parsed["mcp_servers"]["agentmemory"]
+        self.assertEqual(server["args"][-1], "mcp")
+        self.assertNotIn("AGENTMEMORY_URL", server.get("env", {}))
+
+    def test_project_hooks_preserve_unrelated_handler(self):
+        import json
+        payload = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo hello"}, {"type": "command", "command": "python /tmp/agentmemory-proxy/hook.py"}]}]}}
+        result = json.loads(migration.project_hooks(json.dumps(payload)))
+        commands = [h["command"] for entry in result["hooks"]["Stop"] for h in entry["hooks"]]
+        self.assertIn("echo hello", commands)
+        self.assertTrue(any("project-memory.py" in command for command in commands))
+        self.assertFalse(any("agentmemory-proxy" in command for command in commands))
+
+    def test_scope_rejects_mixed_memory(self):
+        import tempfile
+        import subprocess
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            sessions = [{"cwd": str(root), "project": root.name}]
+            self.assertEqual(migration.verify_project_scope(sessions, [{"project": root.name}], root / "data"), root)
+            with self.assertRaises(migration.MigrationError):
+                migration.verify_project_scope(sessions, [{"project": "other"}], root / "data")
+            with self.assertRaises(migration.MigrationError):
+                migration.verify_project_scope(sessions, [{}], root / "data")
+
+    def test_runtime_settings_removed_not_model(self):
+        text = "AGENTMEMORY_DATA_DIR=/old\nIII_REST_PORT=3111\nOPENAI_MODEL=qwen\n"
+        self.assertEqual(migration.without_runtime_values(text), "OPENAI_MODEL=qwen\n")
+
     def test_hooks_change_only_agentmemory_commands(self):
         original = '{"hooks": [{"command": "AGENTMEMORY_URL=http://127.0.0.1:3112 npx agentmemory"}, {"command": "curl http://127.0.0.1:3112"}]}'
         result = migration.update_hooks(original)
