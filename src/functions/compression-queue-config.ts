@@ -1,5 +1,13 @@
 /** Shared queue configuration catalog for runtime and the settings UI. */
 export const compressionQueueSettings = {
+  AGENTMEMORY_LLM_MAX_CONCURRENT_REQUESTS: {
+    fallback: 4, min: 1, max: 16,
+    description: "Общий предел одновременно выполняемых запросов LLM во всех управляемых проектах (1–16). Перезапустите все экземпляры после изменения.",
+  },
+  AGENTMEMORY_COMPRESSION_QUEUE_CONCURRENCY: {
+    fallback: 4, min: 1, max: 16,
+    description: "Число одновременно обрабатываемых задач компрессии одного проекта (1–16), не выше общего лимита LLM.",
+  },
   AGENTMEMORY_COMPRESSION_QUEUE_MAX_ATTEMPTS: {
     fallback: 2, min: 1, max: 20,
     description: "Число попыток компрессии на одну задачу (1–20). После исчерпания — ручной повтор.",
@@ -32,7 +40,10 @@ export function readCompressionQueueSettings(env = process.env) {
     const value = env[key];
     return value && validQueueSetting(key, value) ? Number(value) : compressionQueueSettings[key].fallback;
   }
+  const llmConcurrency = read("AGENTMEMORY_LLM_MAX_CONCURRENT_REQUESTS");
   return {
+    llmConcurrency,
+    concurrency: Math.min(llmConcurrency, read("AGENTMEMORY_COMPRESSION_QUEUE_CONCURRENCY")),
     maxAttempts: read("AGENTMEMORY_COMPRESSION_QUEUE_MAX_ATTEMPTS"),
     backfillMs: read("AGENTMEMORY_COMPRESSION_QUEUE_BACKFILL_MS"),
     retryBaseMs: read("AGENTMEMORY_COMPRESSION_QUEUE_RETRY_BASE_MS"),

@@ -117,3 +117,7 @@ The shared settings catalog always exposes max attempts (default 2), recovery
 scan interval (300000 ms), initial retry delay (15000 ms), and maximum retry
 delay (300000 ms). Saving validates ranges. Restart the relevant workers to
 apply values. The model and global generation lock remain unchanged.
+
+## Parallel generation
+
+The default is four concurrent compression jobs per project and four LLM requests across all managed projects. Set AGENTMEMORY_COMPRESSION_QUEUE_CONCURRENCY and AGENTMEMORY_LLM_MAX_CONCURRENT_REQUESTS in Settings (1–16). Restart every active project after changing the shared limit. The global file-backed semaphore covers compression, summarization and vision calls from managed providers; workers with different capacities cannot use slots simultaneously. The LM Studio model must itself support the chosen parallel-request limit. Set both values to 1 to restore serial behavior. The shared lock does not control unrelated LM Studio clients. Local queue completion immediately frees a slot; failure history updates are serialized independently of generation.

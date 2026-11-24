@@ -1,18 +1,16 @@
 import type { MemoryProvider } from "../types.js";
 import { withSharedLlmLock } from "./shared-lock.js";
+import { readCompressionQueueSettings } from "../functions/compression-queue-config.js";
 
-/** Limit all calls using the same provider to one in-flight LM Studio generation.
- * New compression and summary work share this gate, rather than racing
- * independently in the upstream model. An optional host-wide lock coordinates
- * separate project instances.
- */
+/** Bounded local FIFO with a shared host-wide generation semaphore. */
 export class SerializedMemoryProvider implements MemoryProvider {
   readonly name: string;
   declare readonly describeImage?: MemoryProvider["describeImage"];
-  private tail: Promise<void> = Promise.resolve();
   private closed = false;
-  private waiting = 0;
   private processing = 0;
+  private readonly queue: Array<() => void> = [];
+  private readonly capacity = readCompressionQueueSettings().llmConcurrency;
+  private readonly lock = process.env["AGENTMEMORY_LLM_LOCK_FILE"];
 
   constructor(private readonly inner: MemoryProvider) {
     this.name = `serialized(${inner.name})`;
@@ -22,20 +20,26 @@ export class SerializedMemoryProvider implements MemoryProvider {
     }
   }
 
+  private pump(): void {
+    while (this.processing < this.capacity && this.queue.length) {
+      this.processing++;
+      this.queue.shift()!();
+    }
+  }
+
   private one(fn: () => Promise<string>): Promise<string> {
     if (this.closed) return Promise.reject(new Error("provider_shutdown"));
-    this.waiting++;
-    const run = this.tail.then(async () => {
-      this.waiting--;
-      this.processing++;
-      try {
-        const lock = process.env["AGENTMEMORY_LLM_LOCK_FILE"];
-        return await (lock ? withSharedLlmLock(lock, fn) : fn());
-      }
-      finally { this.processing--; }
+    return new Promise<string>((resolve, reject) => {
+      this.queue.push(() => {
+        void Promise.resolve().then(() =>
+          this.lock ? withSharedLlmLock(this.lock, fn, this.capacity) : fn()
+        ).then(resolve, reject).finally(() => {
+          this.processing--;
+          this.pump();
+        });
+      });
+      this.pump();
     });
-    this.tail = run.then(() => {}, () => {});
-    return run;
   }
 
   compress(system: string, user: string): Promise<string> {
@@ -45,7 +49,7 @@ export class SerializedMemoryProvider implements MemoryProvider {
     return this.one(() => this.inner.summarize(system, user));
   }
   get status(): { active: number; pending: number } {
-    return { active: this.processing, pending: this.waiting };
+    return { active: this.processing, pending: this.queue.length };
   }
   close(): void { this.closed = true; }
 }

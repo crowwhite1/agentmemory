@@ -34,7 +34,8 @@ describe("viewer settings", () => {
   it("always exposes queue controls and validates their ranges", () => {
     const path = useConfig("OPENAI_MODEL=qwen\n");
     const queue = listSettings().filter(entry => entry.group === "Очередь компрессии");
-    expect(queue).toHaveLength(4);
+    expect(queue).toHaveLength(6);
+    expect(() => updateSettings({ AGENTMEMORY_LLM_MAX_CONCURRENT_REQUESTS: "17" })).toThrow();
     expect(queue.find(entry => entry.key === "AGENTMEMORY_COMPRESSION_QUEUE_MAX_ATTEMPTS")?.example).toBe("2");
     expect(() => updateSettings({ AGENTMEMORY_COMPRESSION_QUEUE_MAX_ATTEMPTS: "0" })).toThrow();
     expect(() => updateSettings({ AGENTMEMORY_COMPRESSION_QUEUE_BACKFILL_MS: "100" })).toThrow();
