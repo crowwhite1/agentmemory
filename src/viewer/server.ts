@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { renderViewerDocument } from "./document.js";
 import { listSettings, renderSettingsDocument, updateSettings } from "./control-settings.js";
 import { listProjectInstances, requestProjectAction } from "./control-projects.js";
+import type { registerCompressionQueue } from "../functions/compression-queue.js";
 import {
   checkRequestGuard,
   configuredAllowedOrigins,
@@ -213,6 +214,7 @@ export function startViewerServer(
   _sdk: unknown,
   secret?: string,
   restPort?: number,
+  compressionQueue?: Pick<ReturnType<typeof registerCompressionQueue>, "inspect" | "retry">,
 ): Server {
   // Reset exported runtime state for each start attempt.
   boundViewerPort = null;
@@ -308,6 +310,40 @@ export function startViewerServer(
       }
       res.writeHead(404, { "Content-Type": "text/plain" });
       res.end("viewer not found");
+      return;
+    }
+
+    if (pathname === "/settings/queue" || pathname === "/settings/queue/retry") {
+      if (!isLoopbackHost(host)) {
+        json(res, 403, { error: "Queue control is available only on a loopback viewer." }, req);
+        return;
+      }
+      res.setHeader("Cache-Control", "no-store");
+      if (!compressionQueue) {
+        json(res, 503, { error: "Compression queue is unavailable." }, req);
+        return;
+      }
+      try {
+        if (method === "GET" && pathname === "/settings/queue") {
+          const cursor = new URLSearchParams(qs).get("cursor") || undefined;
+          json(res, 200, await compressionQueue.inspect(cursor), req);
+          return;
+        }
+        if (method === "POST" && pathname === "/settings/queue/retry") {
+          const origin = req.headers.origin;
+          if (origin !== `http://${req.headers.host}` && origin !== `https://${req.headers.host}`) {
+            json(res, 403, { error: "Same-origin request required." }, req);
+            return;
+          }
+          const body = await readBody(req);
+          if (body.length > 65536) throw new Error("Request too large");
+          json(res, 202, await compressionQueue.retry(JSON.parse(body)), req);
+          return;
+        }
+        json(res, 405, { error: "Method not allowed" }, req);
+      } catch {
+        json(res, 400, { error: "Queue request failed. Refresh state and retry if needed." }, req);
+      }
       return;
     }
 

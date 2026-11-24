@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createViewerNonce, buildViewerCsp, VIEWER_NONCE_PLACEHOLDER } from "../auth.js";
 import { parseEnvContent } from "../config.js";
+import { compressionQueueSettings, validQueueSetting } from "../functions/compression-queue-config.js";
 
 export interface SettingsEntry {
   key: string;
@@ -74,6 +75,9 @@ function descriptions(): Map<string, Omit<SettingsEntry, "value" | "configured" 
 
 export function listSettings(): SettingsEntry[] {
   const known = descriptions();
+  for (const [key, rule] of Object.entries(compressionQueueSettings)) {
+    known.set(key, { key, group: "Очередь компрессии", example: String(rule.fallback), description: rule.description });
+  }
   const configured = parseEnvContent(envFileContent());
   for (const key of Object.keys(configured)) {
     if (!KEY_PATTERN.test(key)) continue;
@@ -105,7 +109,7 @@ export function updateSettings(changes: Record<string, unknown>): string[] {
   if (!entries.length || entries.length > 100) throw new Error("Specify 1–100 settings");
   for (const [key, value] of entries) {
     if (!permitted.has(key) || !KEY_PATTERN.test(key)) throw new Error(`Unknown setting: ${key}`);
-    if (typeof value !== "string" || value.length > CUSTOM_VALUE_MAX ||
+    if (typeof value !== "string" || !validQueueSetting(key, value) || value.length > CUSTOM_VALUE_MAX ||
         /[\r\n\0"']/.test(value)) {
       throw new Error(`Invalid setting value: ${key}`);
     }
