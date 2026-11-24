@@ -1,8 +1,10 @@
 import type { MemoryProvider } from "../types.js";
+import { withSharedLlmLock } from "./shared-lock.js";
 
 /** Limit all calls using the same provider to one in-flight LM Studio generation.
  * New compression and summary work share this gate, rather than racing
- * independently in the upstream model. The gate is intentionally process-local.
+ * independently in the upstream model. An optional host-wide lock coordinates
+ * separate project instances.
  */
 export class SerializedMemoryProvider implements MemoryProvider {
   readonly name: string;
@@ -26,7 +28,10 @@ export class SerializedMemoryProvider implements MemoryProvider {
     const run = this.tail.then(async () => {
       this.waiting--;
       this.processing++;
-      try { return await fn(); }
+      try {
+        const lock = process.env["AGENTMEMORY_LLM_LOCK_FILE"];
+        return await (lock ? withSharedLlmLock(lock, fn) : fn());
+      }
       finally { this.processing--; }
     });
     this.tail = run.then(() => {}, () => {});
