@@ -10,6 +10,8 @@ import os
 import plistlib
 import re
 import shutil
+import shlex
+from urllib.parse import urlencode
 import sqlite3
 import subprocess
 import sys
@@ -36,6 +38,9 @@ CODEX_HOOKS = CODEX_HOME / "hooks.json"
 OLD_APP = HOME / "Applications" / "AgentMemory Control.app"
 BACKUP_ROOT = HOME / ".agentmemory" / "migration-backups"
 LOG_DIR = HOME / "Library" / "Logs" / "agentmemory"
+PROJECT_CONTROL = HOME / ".agentmemory" / "projects"
+PROJECT_REGISTRY = PROJECT_CONTROL / "registry.json"
+PROJECT_LAUNCHER = ROOT / "scripts" / "project-memory.py"
 LEGACY_URL = "http://127.0.0.1:3112"
 MEMORY_URL = "http://127.0.0.1:3111"
 
@@ -93,7 +98,7 @@ def update_env(text: str, values: dict[str, str]) -> str:
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
-def update_codex_toml(text: str, npx: str) -> str:
+def update_codex_toml(text: str, npx: str, project_mode: bool = False) -> str:
     parsed = tomllib.loads(text) if text.strip() else {}
     if re.search(r"(?m)^\s*\[\[mcp_servers\.agentmemory", text):
         raise MigrationError("Unsupported Codex AgentMemory array-of-tables; leaving config unchanged")
@@ -106,8 +111,10 @@ def update_codex_toml(text: str, npx: str) -> str:
         raise MigrationError("Invalid AgentMemory MCP environment")
     env = {k: v for k, v in extras.items()
            if isinstance(k, str) and isinstance(v, str)
-           and k not in ("AGENTMEMORY_URL", "AGENTMEMORY_FORCE_PROXY")}
-    env.update({"AGENTMEMORY_URL": MEMORY_URL, "AGENTMEMORY_FORCE_PROXY": "1"})
+           and k not in ("AGENTMEMORY_URL", "AGENTMEMORY_FORCE_PROXY", "AGENTMEMORY_DATA_DIR",
+                         "AGENTMEMORY_CAPTURE_SPOOL_DIR", "CLAUDE_PLUGIN_OPTION_AGENTMEMORY_URL")}
+    if not project_mode:
+        env.update({"AGENTMEMORY_URL": MEMORY_URL, "AGENTMEMORY_FORCE_PROXY": "1"})
     kept: list[str] = []
     for part in re.split(r"(?m)(?=^\[+[^\n]+\]+\s*$)", text):
         hdr = re.match(r"\s*\[([^]]+)\]", part)
@@ -121,9 +128,13 @@ def update_codex_toml(text: str, npx: str) -> str:
         f"command = {json.dumps(npx)}",
         'args = ["-y", "@agentmemory/mcp"]',
     ]
+    if project_mode:
+        lines = ["[mcp_servers.agentmemory]", f"command = {json.dumps(sys.executable)}",
+                 f"args = {json.dumps([str(PROJECT_LAUNCHER), 'mcp'])}",
+                 "startup_timeout_sec = 300"]
     # Preserve existing AgentMemory-specific settings, except obsolete routing.
     for key, value in existing.items():
-        if key in ("command", "args", "env"):
+        if key in ("command", "args", "env") or (project_mode and key in ("cwd", "startup_timeout_sec", "url", "http_headers", "env_http_headers", "enabled")):
             continue
         if re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_-]*", key) and isinstance(value, (str, bool, int)):
             encoded = json.dumps(value).lower() if isinstance(value, bool) else json.dumps(value)
@@ -150,6 +161,135 @@ def update_hooks(text: str) -> str:
             )
         return value
     return json.dumps(transform(payload), indent=2, ensure_ascii=False) + "\n"
+
+
+def project_hooks(text: str) -> str:
+    """Replace recognized AgentMemory hooks, preserving unrelated handlers."""
+    payload = json.loads(text) if text.strip() else {"hooks": {}}
+    if not isinstance(payload, dict) or not isinstance(payload.get("hooks"), dict):
+        raise MigrationError("Unknown Codex hooks manifest layout; no changes made")
+    hooks = payload["hooks"]
+    for event, entries in list(hooks.items()):
+        if not isinstance(entries, list):
+            raise MigrationError("Invalid Codex hook entries")
+        kept = []
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
+                raise MigrationError("Invalid Codex hook entry")
+            handlers = []
+            for handler in entry["hooks"]:
+                if not isinstance(handler, dict):
+                    raise MigrationError("Invalid Codex hook handler")
+                command = str(handler.get("command", "")) + " " + str(handler.get("args", ""))
+                normalized = command.lower()
+                if "agentmemory" not in normalized:
+                    handlers.append(handler)
+                elif ("agentmemory-proxy" in normalized or "/plugin/scripts/" in normalized
+                      or "project-memory.py" in normalized or "${claude_plugin_root}/scripts/" in normalized):
+                    continue
+                else:
+                    raise MigrationError("Unrecognized AgentMemory hook; inspect hooks.json before migrating")
+            if handlers:
+                kept.append({**entry, "hooks": handlers})
+        hooks[event] = kept
+    native = json.loads((ROOT / "plugin" / "hooks" / "hooks.codex.json").read_text())["hooks"]
+    for event, entries in native.items():
+        for entry in entries:
+            converted = []
+            for handler in entry["hooks"]:
+                match = re.search(r"/scripts/([a-z-]+)\.mjs", handler["command"])
+                if not match:
+                    raise MigrationError("Unknown bundled native hook")
+                converted.append({**handler, "command": shlex.join(
+                    [sys.executable, str(PROJECT_LAUNCHER), "hook", match.group(1)]),
+                    "timeout": 300})
+            hooks.setdefault(event, []).append({**entry, "hooks": converted})
+    return json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+
+
+def without_runtime_values(text: str) -> str:
+    # Settings are shared, but routing/storage is always per instance.
+    excluded = {"AGENTMEMORY_DATA_DIR", "AGENTMEMORY_URL", "AGENTMEMORY_RUNTIME_DIR",
+                "AGENTMEMORY_CAPTURE_SPOOL_DIR", "AGENTMEMORY_REDIS_URL",
+                "AGENTMEMORY_STATE_BACKEND", "STANDALONE_PERSIST_PATH",
+                "AGENTMEMORY_LLM_LOCK_FILE", "AGENTMEMORY_LLM_LOCK_PYTHON",
+                "AGENTMEMORY_METRICS_PORT", "III_URL", "III_ENGINE_URL",
+                "III_ENGINE_PORT", "III_REST_PORT", "III_VIEWER_PORT"}
+    return "\n".join(line for line in text.splitlines()
+                     if not (m := re.match(r"^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=", line))
+                     or m.group(1) not in excluded) + "\n"
+
+
+def read_scope_page(path: str, token: str, cursor: str | None) -> dict:
+    query = {"agentId": "*", "limit": "100"}
+    if cursor:
+        query["cursor"] = cursor
+    request = urllib.request.Request(f"{MEMORY_URL}/agentmemory/{path}?{urlencode(query)}",
+                                     headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        value = json.load(response)
+    if not isinstance(value, dict):
+        raise MigrationError("Unexpected scope response")
+    return value
+
+
+def scan_scope(path: str, token: str) -> list[dict]:
+    rows = []
+    cursor = None
+    seen = set()
+    while True:
+        value = read_scope_page(path, token, cursor)
+        items = value.get(path)
+        if not isinstance(items, list) or not all(isinstance(x, dict) for x in items):
+            raise MigrationError(f"Unexpected {path} response")
+        rows.extend(items)
+        cursor = value.get("nextCursor")
+        if not cursor:
+            return rows
+        if not isinstance(cursor, str) or cursor in seen or len(seen) >= 10000:
+            raise MigrationError(f"Invalid pagination of {path}")
+        seen.add(cursor)
+
+
+def verify_project_scope(sessions: list[dict], memories: list[dict], data: Path) -> Path:
+    roots = set()
+    for session in sessions:
+        cwd = session.get("cwd")
+        if not isinstance(cwd, str) or not Path(cwd).is_absolute():
+            raise MigrationError("Legacy session has no verifiable workspace; preserve store separately")
+        result = run("git", "-C", cwd, "rev-parse", "--show-toplevel", check=False)
+        if result.returncode:
+            raise MigrationError(f"Legacy workspace is unavailable: {cwd}")
+        root = Path(result.stdout.strip()).resolve()
+        if session.get("project") != root.name:
+            raise MigrationError("Legacy session project identity does not match its Git root")
+        roots.add(root)
+    if not roots and data.name == "data" and (data.parent / ".git").exists():
+        roots.add(data.parent.resolve())
+    if len(roots) != 1:
+        raise MigrationError("Legacy store is empty/unassigned or contains multiple projects; no automatic adoption")
+    root = roots.pop()
+    for memory in memories:
+        if memory.get("project") != root.name:
+            raise MigrationError("Legacy store contains unscoped or other-project memories; no automatic adoption")
+    return root
+
+
+def verify_live_project(data: Path, config: dict[str, str]) -> Path:
+    token = config.get("AGENTMEMORY_SECRET", "")
+    for candidate in (HOME / ".agentmemory" / "secret", data / "secret", data / ".hmac"):
+        if not token and candidate.is_file():
+            token = candidate.read_text().strip()
+    if not token:
+        raise MigrationError("Cannot authenticate old worker to verify project identity")
+    sessions = scan_scope("sessions", token)
+    memories = scan_scope("memories", token)
+    return verify_project_scope(sessions, memories, data)
+
+
+def project_cli(root: Path, action: str, *flags: str, check: bool = True):
+    return run(sys.executable, PROJECT_LAUNCHER, "--project", root, *flags, action,
+               timeout=360, check=check)
 
 
 def launch_loaded(label: str) -> bool:
@@ -400,11 +540,12 @@ def verify_settings_page() -> None:
         raise MigrationError("New AgentMemory viewer settings page is unavailable") from exc
 
 
-def native_plist(node: str) -> bytes:
+def native_plist(node: str, project: Path | None = None) -> bytes:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     return plistlib.dumps({
         "Label": MEMORY_LABEL,
-        "ProgramArguments": [node, str(ROOT / "dist" / "cli.mjs")],
+        "ProgramArguments": ([sys.executable, str(PROJECT_LAUNCHER), "--project", str(project), "start"]
+                             if project else [node, str(ROOT / "dist" / "cli.mjs")]),
         "WorkingDirectory": str(ROOT),
         "EnvironmentVariables": {
             "HOME": str(HOME),
@@ -412,7 +553,7 @@ def native_plist(node: str) -> bytes:
                                      "/usr/local/bin", "/usr/bin", "/bin"]),
         },
         # The CLI launches supervised iii Compose workers and then returns.
-        "RunAtLoad": True,
+        "RunAtLoad": False if project else True,
         "KeepAlive": False,
         "StandardOutPath": str(LOG_DIR / "agentmemory.out.log"),
         "StandardErrorPath": str(LOG_DIR / "agentmemory.err.log"),
@@ -429,6 +570,8 @@ def migrate() -> int:
     node, npx = shutil.which("node"), shutil.which("npx")
     if not node or not npx:
         raise MigrationError("Node.js and npm are required")
+    if PROJECT_REGISTRY.exists() and json.loads(PROJECT_REGISTRY.read_text()):
+        raise MigrationError("Project registry already exists; refusing to overwrite a previous installation")
     retry_failed_proxy_writes_once()
     status = check_old_proxy()
     configured_model = env_values(ENV_PATH.read_text() if ENV_PATH.exists() else "").get("OPENAI_MODEL", "")
@@ -440,7 +583,7 @@ def migrate() -> int:
     backup_dir = BACKUP_ROOT / stamp
     backup_dir.mkdir(parents=True, mode=0o700, exist_ok=False)
     tracked = [ENV_PATH, CODEX_TOML, CODEX_HOOKS, PROXY_PLIST,
-               MEMORY_PLIST, LMSTUDIO_PLIST]
+               MEMORY_PLIST, LMSTUDIO_PLIST, PROJECT_REGISTRY]
     existed: list[bool] = []
     for idx, path in enumerate(tracked):
         existed.append(path.is_file())
@@ -454,10 +597,12 @@ def migrate() -> int:
     old_service = plistlib.loads(PROXY_PLIST.read_bytes())
     proxy_root = Path(old_service.get("WorkingDirectory", str(HOME / "life" / "agentmemory-proxy")))
     previous_data = live_data_directory(HOME / ".agentmemory" / "engine-state.json")
+    project = verify_live_project(previous_data, env)
+    log(f"Verified single-project legacy store: {project}")
     # If the old state lives under the proxy checkout, move a consistent copy
     # out of that checkout *after stopping the old engine* and before new start.
     relocate_data = under_path(previous_data, proxy_root.resolve())
-    next_data = ((HOME / "Library" / "Application Support" / "agentmemory").resolve()
+    next_data = ((PROJECT_CONTROL / "legacy" / project.name).resolve()
                  if relocate_data else previous_data)
     if relocate_data and next_data.exists() and any(next_data.iterdir()):
         raise MigrationError(
@@ -490,6 +635,7 @@ def migrate() -> int:
         "existing": [str(path) for path, yes in zip(tracked, existed) if yes],
         "queue_path": str(queue_path), "proxy_root": str(proxy_root),
         "previous_data_dir": str(previous_data), "new_data_dir": str(next_data),
+        "project": str(project),
         "loaded": was_loaded,
         "discovered_state_stores": [str(p) for p in state_databases()],
     }, indent=2) + "\n")
@@ -499,24 +645,28 @@ def migrate() -> int:
     retired_checkout = backup_dir / "agentmemory-proxy-retired"
     retired_app = backup_dir / "AgentMemory Control.app"
     changed = False
+    registered = False
     try:
         if not env.get("OPENAI_MODEL"):
             raise MigrationError("OPENAI_MODEL is missing; refusing to replace your Qwen model")
         values = {"OPENAI_BASE_URL": "http://127.0.0.1:1234/v1",
-                  "AGENTMEMORY_AUTO_COMPRESS": "true",
-                  "AGENTMEMORY_DATA_DIR": str(next_data)}
+                  "AGENTMEMORY_AUTO_COMPRESS": "true"}
         if not env.get("AGENTMEMORY_LLM_PROVIDER"):
             values["AGENTMEMORY_LLM_PROVIDER"] = "openai"
-        new_env = update_env(env_text, values)
+        new_env = update_env(without_runtime_values(env_text), values)
         new_codex = update_codex_toml(
-            CODEX_TOML.read_text() if CODEX_TOML.is_file() else "", npx
+            CODEX_TOML.read_text() if CODEX_TOML.is_file() else "", npx, project_mode=True
         )
-        new_hooks = update_hooks(CODEX_HOOKS.read_text()) if CODEX_HOOKS.is_file() else None
+        new_hooks = project_hooks(CODEX_HOOKS.read_text() if CODEX_HOOKS.is_file() else "")
         check_old_proxy()
         # Stop with the LEGACY environment still intact. The CLI uses
         # AGENTMEMORY_DATA_DIR to find Compose ownership metadata; replacing
         # it before stopping makes the old engine undiscoverable.
         changed = True
+        # Freeze legacy intake before stopping its consumer. Recheck SQLite
+        # after bootout; any racing delivery causes rollback, never deletion.
+        bootout(PROXY_LABEL, PROXY_PLIST)
+        check_queue_file(queue_path)
         bootout(MEMORY_LABEL, MEMORY_PLIST)
         legacy_env = os.environ.copy()
         legacy_env["AGENTMEMORY_DATA_DIR"] = str(previous_data)
@@ -526,6 +676,7 @@ def migrate() -> int:
             raise MigrationError("Could not stop old iii worker cleanly: " + stopped.stderr[-700:])
         wait_old_worker_stopped()
         snapshot_state_store(state_file, backup_dir / "active-previous-state.db")
+        snapshot_sqlite(queue_path, backup_dir / "proxy-queue-final.sqlite")
         log("Offline active StateKV backup completed")
         write_atomic(ENV_PATH, new_env)
         write_atomic(CODEX_TOML, new_codex)
@@ -536,8 +687,10 @@ def migrate() -> int:
                 raise MigrationError(f"Previous AgentMemory data directory disappeared: {previous_data}")
             shutil.copytree(previous_data, next_data, dirs_exist_ok=True)
             log(f"Copied existing memory state into permanent directory {next_data}")
-        write_atomic(MEMORY_PLIST, native_plist(node), mode=0o644)
-        bootstrap(MEMORY_LABEL, MEMORY_PLIST)
+        project_cli(project, "register", "--existing-data-dir", str(next_data))
+        registered = True
+        write_atomic(MEMORY_PLIST, native_plist(node, project), mode=0o644)
+        project_cli(project, "start")
         wait_ready()
         verify_native_compression_queue()
         verify_settings_page()
@@ -580,13 +733,10 @@ def migrate() -> int:
             log(f"Native agentmemory CLI installed: {cli_path}")
         else:
             log("Existing agentmemory CLI was left unchanged; no commands overwritten")
-        expected = (HOME / "life" / "agentmemory-proxy").resolve()
-        if proxy_root.resolve() == expected and (proxy_root / "pyproject.toml").is_file():
-            shutil.move(str(proxy_root), str(retired_checkout))
-            log(f"Old proxy repository retired to archive: {retired_checkout}")
-        else:
-            log(f"Unrecognized proxy checkout left unchanged: {proxy_root}")
-        log("SUCCESS: old proxy service removed, fork active, Codex routes directly to :3111")
+        # Keep the old checkout in place: it may contain other projects'
+        # unassigned stores or the only compatible Python interpreter.
+        log(f"Legacy checkout and any unassigned stores retained at {proxy_root}")
+        log("SUCCESS: old proxy service removed, project-isolated fork active")
         log("No memory or queue data deleted; backups remain for rollback")
         log("Restart active Codex sessions so they reload the new MCP endpoint")
         log("Settings: http://127.0.0.1:3113/settings")
@@ -608,9 +758,13 @@ def migrate() -> int:
                 log(f"WARNING: legacy executable restore incomplete: {exc}")
             try:
                 bootout(MEMORY_LABEL, MEMORY_PLIST)
-                run(node, ROOT / "dist" / "cli.mjs", "stop", check=False, timeout=40)
-            except Exception:
-                pass
+                if registered:
+                    stopped_new = project_cli(project, "stop", check=False)
+                    if stopped_new.returncode:
+                        raise MigrationError("Could not stop the new instance; inspect before restoring services")
+            except Exception as exc:
+                log(f"WARNING: new instance stop failed: {exc}; recover manually using {backup_dir}")
+                raise
             for idx, path in enumerate(tracked):
                 backup = backup_dir / f"file-{idx}"
                 if existed[idx] and backup.is_file():
@@ -638,7 +792,7 @@ def main() -> int:
             log(f"Verified active StateKV: {active / 'state_store.db'}")
             log("Other discovered stores (not merged): " + ", ".join(str(p) for p in state_databases()))
             return 0
-        raise MigrationError("Legacy single-store cutover is disabled pending project-aware migration. Use --inspect for read-only discovery.")
+        return migrate()
     except (MigrationError, OSError, ValueError, subprocess.SubprocessError, sqlite3.Error) as exc:
         log(f"ABORTED: {exc}")
         return 1
