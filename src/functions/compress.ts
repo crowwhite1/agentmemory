@@ -6,7 +6,7 @@ import { KV } from "../state/schema.js";
 import type { StateKV } from "../state/kv.js";
 import { COMPRESSION_SYSTEM, buildCompressionPrompt } from "../prompts/compression.js";
 import { VISION_DESCRIPTION_PROMPT } from "../prompts/vision.js";
-import { parseCompressionXml } from "../prompts/compression-output.js";
+import { parseCompressionOutput } from "../prompts/compression-output.js";
 import { getSearchIndex, getVectorIndex, scheduleIndexSave, vectorIndexAddGuarded } from "./search.js";
 import { CompressOutputSchema } from "../eval/schemas.js";
 import { validateOutput } from "../eval/validator.js";
@@ -158,7 +158,7 @@ export function registerCompressFunction(
         timestamp: raw.timestamp,
       });
       const validator = (response: string) => {
-        const parsed = parseCompressionXml(response);
+        const parsed = parseCompressionOutput(response);
         if (!parsed) return { valid: false as const, errors: ["xml_parse_failed"] };
         const result = validateOutput(CompressOutputSchema, scrubRecord(parsed), "mem::compress");
         return result.valid ? result : { valid: false as const, errors: result.result.errors };

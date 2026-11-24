@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { parseCompressionXml } from "../src/prompts/compression-output.js";
+import { parseCompressionXml, parseCompressionOutput } from "../src/prompts/compression-output.js";
 import { COMPRESSION_SYSTEM } from "../src/prompts/compression.js";
 import { compressWithRetry } from "../src/eval/self-correct.js";
 import { CompressOutputSchema } from "../src/eval/schemas.js";
@@ -71,6 +71,42 @@ describe("compression output boundaries", () => {
     expect(CompressOutputSchema.safeParse(parsed).success).toBe(true);
     expect(parsed?.title).toBe("Updated configuration");
     expect(parsed?.type).toBe("file_edit");
+  });
+
+  it.each(["task", "message"])("recovers the observed Qwen flat concepts and %s type", async (type) => {
+    const response = `<observation>
+      <type>${type}</type><title>Send message to collaboration directory</title>
+      <subtitle>Message sent to root collaboration path</subtitle>
+      <facts><fact>Target directory: /root</fact><fact>Message payload encoded in Base64</fact></facts>
+      <narrative>A collaboration message was sent to the root directory.</narrative>
+      <concepts>collaboration message, base64 encoded data, team sync, real-time development update</concepts>
+      <files><file>/root</file></files><importance>4</importance></observation>`;
+    const provider = providerReturning(response);
+    const r = rig(provider);
+    expect(await r.call()).toMatchObject({ success: true, compressed: {
+      type: type === "message" ? "conversation" : "task",
+      concepts: ["collaboration message", "base64 encoded data", "team sync", "real-time development update"],
+      files: ["/root"],
+    } });
+    expect(provider.compress).toHaveBeenCalledTimes(1);
+    expect(r.stored().compression?.status).toBe("complete");
+  });
+
+  it("does not relax other list boundaries or nested markup", () => {
+    expect(parseCompressionXml(xml.replace("<facts><fact>The server port is now 3111.</fact></facts>", "<facts>one, two</facts>"))).toBeNull();
+    expect(parseCompressionXml(xml.replace("<files><file>config.ts</file></files>", "<files>config.ts, other.ts</files>"))).toBeNull();
+    expect(parseCompressionXml(xml.replace("<concept>configuration</concept>", "<wrong>configuration</wrong>"))).toBeNull();
+  });
+
+  it("validates JSON responses before saving and retains source", async () => {
+    const data = CompressOutputSchema.parse(parseCompressionXml(xml));
+    const provider = providerReturning(JSON.stringify({...data, importance: 99}), JSON.stringify(data));
+    const r = rig(provider, buildSyntheticCompression(raw));
+    expect(await r.call()).toMatchObject({ success: true, compressed: { title: data.title } });
+    expect(provider.compress).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(provider.compress).mock.calls[1][0]).toContain("importance: use an integer from 1 to 10");
+    expect((r.stored() as CompressedObservation).source?.toolOutput).toBe(raw.toolOutput);
+    expect(parseCompressionOutput(JSON.stringify({...data, unknown: "bad"}))).toBeNull();
   });
 
   it("decodes XML text without interpreting encoded tags as structure", () => {

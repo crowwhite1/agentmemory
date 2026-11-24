@@ -121,3 +121,15 @@ apply values. The model and global generation lock remain unchanged.
 ## Parallel generation
 
 The default is four concurrent compression jobs per project and four LLM requests across all managed projects. Set AGENTMEMORY_COMPRESSION_QUEUE_CONCURRENCY and AGENTMEMORY_LLM_MAX_CONCURRENT_REQUESTS in Settings (1–16). Restart every active project after changing the shared limit. The global file-backed semaphore covers compression, summarization and vision calls from managed providers; workers with different capacities cannot use slots simultaneously. The LM Studio model must itself support the chosen parallel-request limit. Set both values to 1 to restore serial behavior. The shared lock does not control unrelated LM Studio clients. Local queue completion immediately frees a slot; failure history updates are serialized independently of generation.
+
+## Observation output compatibility
+
+XML remains the default. Flat comma/semicolon-separated concepts and the
+observed message type are normalized to the existing array and conversation
+type; other structural and schema errors remain failures. Retry instructions
+identify invalid fields without including rejected raw model text. Optional
+OPENAI_COMPRESSION_FORMAT=json_schema requests structured JSON only for
+observation compression, leaving summaries and other calls unchanged. The
+response is always validated against the existing Zod schema before saving.
+Set xml (or clear the setting) and restart if the model/runtime does not support
+structured output. No observation schema or stored source migration is needed.

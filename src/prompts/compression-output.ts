@@ -65,6 +65,15 @@ export function parseCompressionXml(response: string) {
       if (text === null) return null;
       scalars[field.name] = text;
     } else if (Object.hasOwn(LISTS, field.name)) {
+      // Some small models emit a plain comma-separated concepts list.
+      // Accept only this unambiguous representation; facts and paths retain
+      // their strict element structure (commas may be meaningful in paths).
+      if (field.name === "concepts" && field.content.trim() && !field.content.includes("<")) {
+        const text = xmlText(field.content);
+        if (text === null) return null;
+        lists.concepts = text.split(/[,;\n]+/).map(x => x.trim()).filter(Boolean);
+        continue;
+      }
       const children = elements(field.content);
       if (!children) return null;
       for (const child of children) {
@@ -78,7 +87,7 @@ export function parseCompressionXml(response: string) {
     }
   }
   return {
-    type: scalars.type ?? "",
+    type: scalars.type === "message" ? "conversation" : (scalars.type ?? ""),
     title: scalars.title ?? "",
     subtitle: scalars.subtitle || undefined,
     facts: lists.facts,
@@ -87,4 +96,20 @@ export function parseCompressionXml(response: string) {
     files: lists.files,
     importance: /^\d+$/.test(scalars.importance ?? "") ? Number(scalars.importance) : NaN,
   };
+}
+
+/** JSON is an alternate wire format, not a relaxation of the Zod schema. */
+export function parseCompressionOutput(response: string): unknown {
+  const text = response.trim();
+  const fenced = /^```json\s*\n([\s\S]*?)\n```$/i.exec(text);
+  const json = fenced ? fenced[1].trim() : text;
+  if (json.startsWith("{")) {
+    try {
+      const value: unknown = JSON.parse(json);
+      if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+      if (Object.keys(value).some(key => !SCALARS.has(key) && !Object.hasOwn(LISTS, key))) return null;
+      return value;
+    } catch { return null; }
+  }
+  return parseCompressionXml(response);
 }

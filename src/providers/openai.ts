@@ -1,6 +1,8 @@
 import type { MemoryProvider } from "../types.js";
 import { getEnvVar } from "../config.js";
 import { fetchWithTimeout } from "./_fetch.js";
+import { COMPRESSION_SYSTEM, COMPRESSION_JSON_SYSTEM } from "../prompts/compression.js";
+import { COMPRESSION_JSON_RESPONSE_FORMAT } from "../prompts/compression-json-schema.js";
 import {
   DEFAULT_AZURE_API_VERSION,
   buildAuthHeaders,
@@ -68,14 +70,21 @@ export class OpenAIProvider implements MemoryProvider {
   }
 
   async compress(systemPrompt: string, userPrompt: string): Promise<string> {
-    return this.call(systemPrompt, userPrompt);
+    // Only observation compression uses the structured contract. Other
+    // operations using compress/summarize must retain their original format.
+    const structured = getEnvVar("OPENAI_COMPRESSION_FORMAT") === "json_schema" &&
+      systemPrompt.startsWith(COMPRESSION_SYSTEM);
+    return this.call(
+      structured ? COMPRESSION_JSON_SYSTEM + systemPrompt.slice(COMPRESSION_SYSTEM.length) : systemPrompt,
+      userPrompt, structured,
+    );
   }
 
   async summarize(systemPrompt: string, userPrompt: string): Promise<string> {
     return this.call(systemPrompt, userPrompt);
   }
 
-  private async call(systemPrompt: string, userPrompt: string): Promise<string> {
+  private async call(systemPrompt: string, userPrompt: string, structured = false): Promise<string> {
     const url = buildChatUrl(this.baseUrl, this.isAzure, this.azureApiVersion);
     const body: Record<string, unknown> = {
       model: this.model,
@@ -86,6 +95,10 @@ export class OpenAIProvider implements MemoryProvider {
         { role: "user", content: userPrompt },
       ],
     };
+    if (structured) {
+      body.response_format = COMPRESSION_JSON_RESPONSE_FORMAT;
+      body.temperature = 0;
+    }
     if (this.reasoningEffort) {
       body.reasoning_effort = this.reasoningEffort;
     }

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildCompressionPrompt, sanitizeCompressionText } from "../src/prompts/compression.js";
+import { COMPRESSION_SYSTEM, buildCompressionPrompt, sanitizeCompressionText } from "../src/prompts/compression.js";
 import { OpenAIProvider } from "../src/providers/openai.js";
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe("binary-safe compression prompts", () => {
   it("removes screenshot JPEG Base64 before token truncation", () => {
@@ -31,6 +31,26 @@ describe("binary-safe compression prompts", () => {
   it("preserves long source identifiers that are not encoded binary", () => {
     const identifier = "a".repeat(300);
     expect(sanitizeCompressionText(identifier)).toBe(identifier);
+  });
+});
+
+describe("OpenAI observation structured output", () => {
+  it("only requests JSON schema for observation compression when explicitly configured", async () => {
+    vi.stubEnv("OPENAI_COMPRESSION_FORMAT", "json_schema");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({choices: [{finish_reason: "stop", message: {content: "{}"}}]}), {status: 200}));
+    const provider = new OpenAIProvider("local", "qwen3-4b", 4096, "http://localhost:1234/v1");
+    await provider.compress(COMPRESSION_SYSTEM + "\nCorrect these fields: type.", "prompt");
+    const request = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(request.response_format).toMatchObject({ type: "json_schema", json_schema: { strict: true, schema: {
+      properties: {type: {enum: expect.arrayContaining(["conversation"])}, concepts: {type: "array"}},
+    }}});
+    expect(request.messages[0].content).toContain("Correct these fields: type.");
+    expect(request.messages[0].content).not.toContain("Output EXACTLY this XML");
+    await provider.summarize(COMPRESSION_SYSTEM, "prompt");
+    await provider.compress("other operation", "prompt");
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body)).response_format).toBeUndefined();
+    expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body)).response_format).toBeUndefined();
   });
 });
 
