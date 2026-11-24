@@ -140,9 +140,13 @@ def allocate(entries, project, existing=None):
 
 def environment(entry):
     env = os.environ.copy()
+    shared_settings = env.get("AGENTMEMORY_SHARED_SETTINGS_FILE") or env.get("AGENTMEMORY_ENV_FILE") or str(HOME / ".agentmemory" / ".env")
+    env["AGENTMEMORY_ENV_FILE"] = shared_settings
     rest, viewer, engine = ports(entry["instance"])
     env.update({
         "AGENTMEMORY_URL": url(entry),
+        "AGENTMEMORY_PROJECT_CONTROLLER": str(Path(__file__).resolve()),
+        "AGENTMEMORY_SHARED_SETTINGS_FILE": shared_settings,
         "AGENTMEMORY_DATA_DIR": str(data_dir(entry)),
         "AGENTMEMORY_CAPTURE_SPOOL_DIR": str(data_dir(entry) / "capture-spool"),
         "AGENTMEMORY_FORCE_PROXY": "1",
