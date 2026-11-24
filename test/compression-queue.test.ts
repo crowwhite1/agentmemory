@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { readCompressionQueueSettings } from "../src/functions/compression-queue-config.js";
+
+afterEach(() => vi.unstubAllEnvs());
 import { registerCompressionQueue, compressionQueueKey } from "../src/functions/compression-queue.js";
 import { KV } from "../src/state/schema.js";
 import type { RawObservation } from "../src/types.js";
@@ -88,6 +91,80 @@ describe("StateKV compression queue", () => {
     } finally {
       restored.stop();
     }
+  });
+
+  it("retains failures across worker restart and successful manual retry", async () => {
+    vi.stubEnv("AGENTMEMORY_COMPRESSION_QUEUE_MAX_ATTEMPTS", "1");
+    const { kv, sdk, handlers, bucket } = rig();
+    const first = registerCompressionQueue(sdk as never, kv as never);
+    const identity = { sessionId: "session-1", observationId: "obs-1" };
+    await handlers.get("mem::compression-enqueue")!(identity as never);
+    sdk.trigger.mockResolvedValueOnce({ success: false, error: "parse_failed" });
+    try {
+      await first.drain();
+      expect((await first.status()).exhausted).toBe(1);
+    } finally { first.stop(); }
+    const restored = registerCompressionQueue(sdk as never, kv as never);
+    try {
+      expect(await restored.inspect()).toMatchObject({
+        history: [{ ...identity, attempt: 1, error: "parse_failed", outcome: "exhausted" }],
+        jobs: [{ ...identity, status: "exhausted" }],
+      });
+      const callCount = sdk.trigger.mock.calls.length;
+      expect(await restored.retry({ items: [identity, identity] })).toMatchObject({ accepted: 1 });
+      expect(await restored.retry({ items: [identity] })).toMatchObject({ accepted: 0, results: [{ outcome: "already_queued" }] });
+      expect(sdk.trigger.mock.calls.length).toBe(callCount);
+      const job = bucket(KV.compressionQueue).get(compressionQueueKey(identity.sessionId, identity.observationId));
+      expect(job).toMatchObject({ status: "pending", attempts: 0 });
+      await restored.drain();
+      expect((await restored.status()).exhausted).toBe(0);
+      expect(await restored.inspect()).toMatchObject({
+        jobs: [], history: [{ ...identity, error: "parse_failed" }],
+      });
+    } finally { restored.stop(); }
+  });
+
+  it("finds legacy failures outside the queue and queues only recoverable sources", async () => {
+    const { kv, sdk, bucket, raw } = rig();
+    const compression = { status: "failed", revision: "old", attempts: 3, error: "validation_failed" };
+    bucket(KV.observations(raw.sessionId)).set(raw.id, { ...raw, compression });
+    bucket(KV.observations(raw.sessionId)).set("missing-source", {
+      id: "missing-source", sessionId: raw.sessionId, hookType: raw.hookType, timestamp: raw.timestamp, compression,
+    });
+    const worker = registerCompressionQueue(sdk as never, kv as never);
+    try {
+      expect(await worker.inspect()).toMatchObject({ jobs: [], legacy: [
+        { observationId: "missing-source", retryable: false },
+        { observationId: raw.id, retryable: true, error: "validation_failed" },
+      ] });
+      expect(await worker.retry({ items: [
+        { sessionId: raw.sessionId, observationId: "missing-source" },
+        { sessionId: raw.sessionId, observationId: raw.id },
+      ] })).toMatchObject({ accepted: 1, results: [{ outcome: "source_unavailable" }, { outcome: "queued" }] });
+      expect(await worker.inspect()).toMatchObject({ legacy: [{ observationId: "missing-source" }], jobs: [{ observationId: raw.id }] });
+      expect(sdk.trigger).not.toHaveBeenCalled();
+    } finally { worker.stop(); }
+  });
+
+  it("uses validated retry delays and does not log raw provider errors", async () => {
+    vi.stubEnv("AGENTMEMORY_COMPRESSION_QUEUE_MAX_ATTEMPTS", "2");
+    vi.stubEnv("AGENTMEMORY_COMPRESSION_QUEUE_RETRY_BASE_MS", "2000");
+    vi.stubEnv("AGENTMEMORY_COMPRESSION_QUEUE_RETRY_MAX_MS", "3000");
+    const { kv, sdk, handlers, raw, bucket } = rig();
+    const worker = registerCompressionQueue(sdk as never, kv as never);
+    try {
+      await handlers.get("mem::compression-enqueue")!({ sessionId: raw.sessionId, observationId: raw.id } as never);
+      sdk.trigger.mockResolvedValueOnce({ success: false, error: "private provider payload" });
+      const before = Date.now();
+      await worker.drain();
+      const job = bucket(KV.compressionQueue).get(compressionQueueKey(raw.sessionId, raw.id)) as { dueAt: number };
+      expect(job.dueAt).toBeGreaterThanOrEqual(before + 2000);
+      expect(job.dueAt).toBeLessThanOrEqual(Date.now() + 2000);
+      const snapshot = await worker.inspect();
+      expect(snapshot).toMatchObject({ history: [{ error: "provider_failure", outcome: "retry_scheduled" }] });
+      expect(JSON.stringify(snapshot)).not.toContain("private provider payload");
+      expect(readCompressionQueueSettings({ AGENTMEMORY_COMPRESSION_QUEUE_MAX_ATTEMPTS: "1000" }).maxAttempts).toBe(2);
+    } finally { worker.stop(); }
   });
 
   it("resumes a persisted running job after a crash", async () => {

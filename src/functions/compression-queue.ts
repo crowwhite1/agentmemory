@@ -50,7 +50,7 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
   stop(): void;
   drain(): Promise<void>;
   status(): Promise<CompressionQueueStatus>;
-  inspect(cursor?: string): Promise<unknown>;
+  inspect(cursor?: string, offset?: number): Promise<unknown>;
   retry(input: unknown): Promise<unknown>;
 } {
   let stopped = false;
@@ -133,13 +133,14 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
     }
   }
 
-  async function inspect(cursor?: string) {
+  async function inspect(cursor?: string, offset = 0) {
     const after = readLegacyCursor(cursor);
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("Invalid queue offset");
     const jobs = (await kv.list<CompressionQueueJob>(KV.compressionQueue)).filter(Boolean);
     const queued = new Set(jobs.map(j => j.id));
     const priority = { exhausted: 0, running: 1, pending: 2 };
     const visibleJobs = jobs.sort((a, b) => priority[a.status] - priority[b.status] || a.enqueuedAt - b.enqueuedAt)
-      .slice(0, JOB_PAGE_SIZE).map(j => ({ ...j, ...(j.lastError ? { lastError: safeError(j.lastError) } : {}) }));
+      .slice(offset, offset + JOB_PAGE_SIZE).map(j => ({ ...j, ...(j.lastError ? { lastError: safeError(j.lastError) } : {}) }));
     const legacy: Array<CompressionIdentity & { attempts: number; error: string; at?: string; retryable: boolean }> = [];
     const sessions = (await kv.list<Session>(KV.sessions)).filter(s => typeof s?.id === "string" && s.id)
       .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
@@ -168,7 +169,7 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
         if (legacy.length >= LEGACY_PAGE_SIZE || scannedObservations >= 1000) { more = true; break outer; }
       }
     }
-    return { status: await status(), settings, jobs: visibleJobs, totalJobs: jobs.length,
+    return { status: await status(), settings, jobs: visibleJobs, totalJobs: jobs.length, jobOffset: offset, jobPageSize: JOB_PAGE_SIZE,
       legacy, history: await history(), historyLimit: HISTORY_LIMIT,
       nextCursor: more && anchor ? Buffer.from(JSON.stringify(anchor)).toString("base64url") : null };
   }
@@ -265,7 +266,7 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
           await recordFailure(claimed, lastError, exhausted ? "exhausted" : "retry_scheduled");
         }
       }
-    } catch (error) {
+    } catch {
       failedPass = true;
       lastError = "queue_processing_failed";
       logger.warn("Compression queue pass failed", { error: lastError });

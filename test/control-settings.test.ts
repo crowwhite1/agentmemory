@@ -31,6 +31,17 @@ describe("viewer settings", () => {
     expect(auto?.description?.length).toBeGreaterThan(12);
   });
 
+  it("always exposes queue controls and validates their ranges", () => {
+    const path = useConfig("OPENAI_MODEL=qwen\n");
+    const queue = listSettings().filter(entry => entry.group === "Очередь компрессии");
+    expect(queue).toHaveLength(4);
+    expect(queue.find(entry => entry.key === "AGENTMEMORY_COMPRESSION_QUEUE_MAX_ATTEMPTS")?.example).toBe("2");
+    expect(() => updateSettings({ AGENTMEMORY_COMPRESSION_QUEUE_MAX_ATTEMPTS: "0" })).toThrow();
+    expect(() => updateSettings({ AGENTMEMORY_COMPRESSION_QUEUE_BACKFILL_MS: "100" })).toThrow();
+    expect(updateSettings({ AGENTMEMORY_COMPRESSION_QUEUE_MAX_ATTEMPTS: "4", AGENTMEMORY_COMPRESSION_QUEUE_RETRY_BASE_MS: "20000" })).toHaveLength(2);
+    expect(readFileSync(path, "utf8")).toContain("AGENTMEMORY_COMPRESSION_QUEUE_MAX_ATTEMPTS=4");
+  });
+
   it("never sends local API keys back to the browser", () => {
     useConfig("OPENAI_API_KEY=local-secret-token\n");
     const key = listSettings().find((entry) => entry.key === "OPENAI_API_KEY");
@@ -64,5 +75,7 @@ describe("viewer settings", () => {
     expect(page.html).not.toContain("__AGENTMEMORY_VIEWER_NONCE__");
     expect(page.csp).toContain("script-src 'nonce-");
     expect(page.html).not.toContain("setInterval");
+    expect(page.html).toContain("Журнал неудачных попыток");
+    expect(page.html).toContain("/settings/queue/retry");
   });
 });

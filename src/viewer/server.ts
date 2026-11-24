@@ -325,8 +325,10 @@ export function startViewerServer(
       }
       try {
         if (method === "GET" && pathname === "/settings/queue") {
-          const cursor = new URLSearchParams(qs).get("cursor") || undefined;
-          json(res, 200, await compressionQueue.inspect(cursor), req);
+          const query = new URLSearchParams(qs);
+          const cursor = query.get("cursor") || undefined;
+          const offset = Number(query.get("offset") || 0);
+          json(res, 200, await compressionQueue.inspect(cursor, offset), req);
           return;
         }
         if (method === "POST" && pathname === "/settings/queue/retry") {
