@@ -3,7 +3,7 @@ export const COMPRESSION_SYSTEM = `You are a memory compression engine for an AI
 Output EXACTLY this XML format with no additional text:
 
 <observation>
-  <type>one of: file_read, file_write, file_edit, command_run, search, web_fetch, conversation, error, decision, discovery, subagent, notification, task, other</type>
+  <type>one of: file_read, file_write, file_edit, command_run, search, web_fetch, conversation, error, decision, discovery, subagent, notification, task, image, other</type>
   <title>Short descriptive title (max 80 chars)</title>
   <subtitle>One-line context (optional)</subtitle>
   <facts>
@@ -23,7 +23,7 @@ Output EXACTLY this XML format with no additional text:
 Rules:
 - Escape &, <, and > inside text as &amp;, &lt;, and &gt;. Use only the tags shown, with no attributes or nested tags inside text fields.
 - Each concept MUST be wrapped in its own <concept> element; never emit bare comma-separated text in <concepts>.
-- For messages use conversation, not message. Choose only one listed type.
+- For messages use conversation; for viewing images use image; for copying files use file_write. Choose only one listed type. Use other when no listed type fits.
 - Be concise but preserve ALL technically relevant details
 - File paths must be exact
 - Importance: 1-3 for routine reads, 4-6 for edits/commands, 7-9 for architectural decisions, 10 for breaking changes
@@ -35,7 +35,7 @@ Rules:
 export const COMPRESSION_JSON_SYSTEM = `Extract the essential factual information from an AI coding agent observation.
 Return only a JSON object with type, title, subtitle, facts, narrative, concepts, files, importance.
 Use arrays of strings for facts, concepts and files, at least one factual detail, and a narrative of at least 10 characters.
-Choose a type from the supplied schema. For messages use conversation.
+Choose a type from the supplied schema. For messages use conversation, for viewing images use image, and for copying files use file_write. Use other when no listed type fits.
 Title: 1–80 characters. Subtitle: empty string if not applicable. Importance: integer from 1 to 10.
 Preserve technical details, exact paths, and reusable search concepts in the source language (include both languages for mixed-language input).
 Do not invent facts. Omit secrets, credentials, Base64, binary payloads and data URIs. Files must be actual paths from the source; use [] if none.`;

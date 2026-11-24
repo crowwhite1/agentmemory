@@ -43,6 +43,13 @@ function xmlText(content: string): string | null {
 const SCALARS = new Set(["type", "title", "subtitle", "narrative", "importance"]);
 const LISTS: Record<string, string> = { facts: "fact", concepts: "concept", files: "file" };
 
+const TYPE_ALIASES: Readonly<Record<string, string>> = {
+  message: "conversation", view_image: "image", file_copy: "file_write",
+};
+function normalizeType(type: unknown): unknown {
+  return typeof type === "string" && Object.hasOwn(TYPE_ALIASES, type) ? TYPE_ALIASES[type] : type;
+}
+
 export function parseCompressionXml(response: string) {
   let xml = response.trim();
   // Reasoning is outside the observation contract, even when it quotes XML fields.
@@ -87,7 +94,7 @@ export function parseCompressionXml(response: string) {
     }
   }
   return {
-    type: scalars.type === "message" ? "conversation" : (scalars.type ?? ""),
+    type: normalizeType(scalars.type ?? "") as string,
     title: scalars.title ?? "",
     subtitle: scalars.subtitle || undefined,
     facts: lists.facts,
@@ -108,7 +115,8 @@ export function parseCompressionOutput(response: string): unknown {
       const value: unknown = JSON.parse(json);
       if (!value || typeof value !== "object" || Array.isArray(value)) return null;
       if (Object.keys(value).some(key => !SCALARS.has(key) && !Object.hasOwn(LISTS, key))) return null;
-      return value;
+      const record = value as Record<string, unknown>;
+      return { ...record, type: normalizeType(record.type) };
     } catch { return null; }
   }
   return parseCompressionXml(response);
