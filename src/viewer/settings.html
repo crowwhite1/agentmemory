@@ -216,7 +216,7 @@ button{border:1px solid #5b6380;color:var(--text);background:#313b52;border-radi
       for(const [name,n] of [["Ожидают",body.status.pending],["В работе",body.status.running],["Исчерпали попытки",body.status.exhausted],["Успешно с запуска",body.status.completedSinceStart],["Сбоев с запуска",body.status.failuresSinceStart]]){
         const stat=document.createElement("div");stat.className="queue-stat";stat.append(makeText("strong",String(n)),makeText("small",name));summary.append(stat);
       }
-      area.append(summary,makeText("p","Активные настройки: "+body.settings.maxAttempts+" попытки; задержка "+body.settings.retryBaseMs+"–"+body.settings.retryMaxMs+" мс; восстановление каждые "+body.settings.backfillMs+" мс. Изменить можно в группе «Очередь компрессии» ниже."));
+      area.append(summary,makeText("p","Активные настройки: "+body.settings.concurrency+" задач параллельно в проекте / "+body.settings.llmConcurrency+" запросов LLM на все проекты; "+body.settings.maxAttempts+" попытки; задержка "+body.settings.retryBaseMs+"–"+body.settings.retryMaxMs+" мс; восстановление каждые "+body.settings.backfillMs+" мс. Изменить можно в группе «Очередь компрессии» ниже."));
       const jobs=queueGroup(area,"Текущие задачи","Показано "+body.jobs.length+" из "+body.totalJobs+" (смещение "+body.jobOffset+"). Сначала задачи с исчерпанными попытками.");
       if(!body.jobs.length)jobs.append(makeText("p","Очередь пуста"));
       for(const job of body.jobs)queueRow(jobs,{...job,error:job.lastError},(queueStatusLabels[job.status]||job.status)+(job.lastError?" · "+errorLabel(job.lastError):""),"Попыток: "+job.attempts+" · Создана: "+dateLabel(job.enqueuedAt)+(job.status==="pending"?" · Следующая: "+dateLabel(job.dueAt):""),job.status==="exhausted");

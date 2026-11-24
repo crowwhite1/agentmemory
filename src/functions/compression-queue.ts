@@ -55,12 +55,14 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
 } {
   let stopped = false;
   let started = false;
-  let active = false;
+  let pumping = false;
+  const active = new Set<string>();
+  let wakePending = false;
   let completed = 0;
   let failures = 0;
   let lastError: string | undefined;
   const settings = readCompressionQueueSettings();
-  const { backfillMs, maxAttempts, retryBaseMs, retryMaxMs } = settings;
+  const { backfillMs, maxAttempts, retryBaseMs, retryMaxMs, concurrency } = settings;
   let backfillAt = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -97,7 +99,9 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
   }
 
   function wake(): void {
-    if (!stopped && started && !active) schedule(0);
+    if (stopped || !started) return;
+    if (pumping) { wakePending = true; return; }
+    if (active.size < concurrency) schedule(0);
   }
 
   async function recoverFromObservations(): Promise<void> {
@@ -122,12 +126,14 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
   }
 
   async function recordFailure(job: CompressionQueueJob, error: string, outcome: Failure["outcome"]): Promise<void> {
-    // Only the single drain loop writes history. Never store raw provider responses or prompts.
+    // Serialize read-modify-write across concurrent workers. Never store raw prompts.
     try {
-      const previous = await history();
-      const entry: Failure = { sessionId: job.sessionId, observationId: job.observationId,
-        at: Date.now(), attempt: job.attempts, error: safeError(error), outcome };
-      await kv.set(KV.compressionQueueHistory, "recent", [entry, ...previous].slice(0, HISTORY_LIMIT));
+      await withKeyedLock("compression-queue-history", async () => {
+        const previous = await history();
+        const entry: Failure = { sessionId: job.sessionId, observationId: job.observationId,
+          at: Date.now(), attempt: job.attempts, error: safeError(error), outcome };
+        await kv.set(KV.compressionQueueHistory, "recent", [entry, ...previous].slice(0, HISTORY_LIMIT));
+      });
     } catch {
       logger.warn("Compression failure history could not be saved");
     }
@@ -208,23 +214,9 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
     return { accepted, results };
   }
 
-  async function drain(): Promise<void> {
-    if (stopped || active) return;
-    active = true;
+  async function runJob(job: CompressionQueueJob): Promise<void> {
     let failedPass = false;
     try {
-      const now = Date.now();
-      if (now >= backfillAt) {
-        backfillAt = now + backfillMs;
-        await recoverFromObservations();
-      }
-      const jobs = await kv.list<CompressionQueueJob>(KV.compressionQueue);
-      const due = jobs
-        .filter((job) => job && job.status !== "exhausted" && job.dueAt <= Date.now())
-        .sort((a, b) => a.enqueuedAt - b.enqueuedAt)
-        .slice(0, JOB_BATCH);
-      const job = due[0];
-      if (!job) return;
       const row = await kv.get<StoredObservation>(KV.observations(job.sessionId), job.observationId);
       if (!row || !needsCompression(row) || !compressionRaw(row)) {
         await kv.delete(KV.compressionQueue, job.id);
@@ -251,38 +243,72 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
         await kv.delete(KV.compressionQueue, job.id);
       } else {
         failures++;
-        lastError = safeError(result?.error || "compression_failed");
+        const failureError = safeError(result?.error || "compression_failed");
+        lastError = failureError;
         if (result?.retryable === false) {
           await kv.delete(KV.compressionQueue, job.id);
-          await recordFailure(claimed, lastError, "not_retryable");
+          await recordFailure(claimed, failureError, "not_retryable");
         } else {
           const exhausted = claimed.attempts >= maxAttempts;
           const retryDelay = Math.min(retryMaxMs, retryBaseMs * 2 ** Math.min(claimed.attempts - 1, 20));
           await kv.set(KV.compressionQueue, job.id, {
             ...claimed, status: exhausted ? "exhausted" : "pending",
             dueAt: Date.now() + retryDelay,
-            lastError,
+            lastError: failureError,
           } satisfies CompressionQueueJob);
-          await recordFailure(claimed, lastError, exhausted ? "exhausted" : "retry_scheduled");
+          await recordFailure(claimed, failureError, exhausted ? "exhausted" : "retry_scheduled");
         }
+      }
+    } catch {
+      failedPass = true;
+      lastError = "queue_processing_failed";
+      logger.warn("Compression queue job failed", { error: lastError });
+    } finally {
+      active.delete(job.id);
+      if (failedPass && !stopped && started) schedule(10_000);
+      else wake();
+    }
+  }
+
+  // One dispatcher claims distinct jobs; each completion immediately makes
+  // its slot available rather than waiting for the slowest job in a batch.
+  async function drain(): Promise<void> {
+    if (stopped || pumping || active.size >= concurrency) return;
+    pumping = true;
+    const launched: Promise<void>[] = [];
+    let failedPass = false;
+    try {
+      if (Date.now() >= backfillAt) {
+        backfillAt = Date.now() + backfillMs;
+        await recoverFromObservations();
+      }
+      const jobs = await kv.list<CompressionQueueJob>(KV.compressionQueue);
+      const due = jobs
+        .filter(job => job && job.status !== "exhausted" && !active.has(job.id) && job.dueAt <= Date.now())
+        .sort((a, b) => a.enqueuedAt - b.enqueuedAt)
+        .slice(0, Math.min(JOB_BATCH, concurrency - active.size));
+      for (const job of due) {
+        if (stopped || active.size >= concurrency) break;
+        active.add(job.id);
+        launched.push(runJob(job));
+      }
+      if (!stopped && started && active.size < concurrency) {
+        const next = jobs.filter(j => j && j.status !== "exhausted" && !active.has(j.id))
+          .reduce((min, j) => Math.min(min, j.dueAt), backfillAt);
+        schedule(Math.max(0, next - Date.now()));
       }
     } catch {
       failedPass = true;
       lastError = "queue_processing_failed";
       logger.warn("Compression queue pass failed", { error: lastError });
     } finally {
-      active = false;
-      if (!stopped && started) {
-        try {
-          const jobs = await kv.list<CompressionQueueJob>(KV.compressionQueue);
-          const due = jobs.filter((j) => j && j.status !== "exhausted")
-            .reduce((min, j) => Math.min(min, j.dueAt), backfillAt);
-          schedule(Math.max(failedPass ? 10_000 : 0, due - Date.now()));
-        } catch {
-          schedule(backfillMs);
-        }
-      }
+      pumping = false;
+      const requested = wakePending;
+      wakePending = false;
+      if (failedPass) schedule(10_000);
+      else if (requested) wake();
     }
+    await Promise.all(launched);
   }
 
   async function status(): Promise<CompressionQueueStatus> {
@@ -291,7 +317,7 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
     const pending = jobs.filter((job) => job.status === "pending" || job.status === "running");
     return {
       pending: pending.filter((job) => job.status === "pending").length,
-      running: active ? 1 : 0,
+      running: active.size,
       exhausted: jobs.filter((job) => job.status === "exhausted").length,
       oldestPendingAgeMs: pending.length ? Math.max(0, now - Math.min(...pending.map((j) => j.enqueuedAt))) : null,
       completedSinceStart: completed,
