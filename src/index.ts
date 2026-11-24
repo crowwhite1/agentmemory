@@ -686,6 +686,7 @@ async function main() {
     sdk,
     secret,
     config.restPort,
+    compressionQueue,
   );
 
   void graphIndexMigration.resumeOnBoot().catch(() => {

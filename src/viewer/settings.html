@@ -21,6 +21,7 @@ button{border:1px solid #5b6380;color:var(--text);background:#313b52;border-radi
 #notice{min-height:20px}.footer{position:sticky;bottom:0;padding:13px;border:1px solid var(--border);border-radius:12px;background:rgba(30,32,40,.96);display:flex;align-items:center;gap:15px;flex-wrap:wrap}
 @media(max-width:650px){.field{grid-template-columns:1fr}.section{padding:16px}.footer{position:static}}
 .project{border-top:1px solid var(--border);padding:12px 0}.project .details{overflow-wrap:anywhere;color:var(--muted);font-size:12px}.project .toolbar{margin-top:8px}.project strong{font-size:16px}
+.queue-summary{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}.queue-stat{padding:8px 12px;border:1px solid var(--border);border-radius:8px;min-width:90px}.queue-stat strong{display:block;font-size:20px}.queue-error{color:#f1a8a8}.queue-list{max-height:460px;overflow:auto}.queue-row{border-top:1px solid var(--border);padding:10px 0;display:flex;gap:12px;justify-content:space-between;align-items:center}.queue-row div{min-width:0;overflow-wrap:anywhere}.queue-row small{color:var(--muted);display:block}.queue-row button{flex-shrink:0}.queue-group{margin-top:20px}.queue-group h3{font-size:15px;margin:0 0 6px}.queue-group p{font-size:12px}
 </style>
 </head>
 <body>
@@ -31,6 +32,7 @@ button{border:1px solid #5b6380;color:var(--text);background:#313b52;border-radi
 <p>Изменения записываются локально в <code>~/.agentmemory/.env</code> (или заданный AGENTMEMORY_ENV_FILE). <strong>Они вступят в силу после перезапуска AgentMemory.</strong> Текущие LLM-запросы не прерываются.</p>
 <p>Секреты не отображаются в интерфейсе и никогда не возвращаются API. Страница не опрашивает сервер по таймеру: данные загружаются при открытии и по нажатию «Обновить».</p></div>
 <section class="section" id="projects-section" hidden><div class="toolbar"><h2>Проекты и экземпляры</h2><button id="projects-reload">Обновить проекты</button></div><p>Отдельное хранилище и очередь для каждого проекта. Состояние обновляется только вручную.</p><div id="projects" aria-live="polite">Загрузка…</div><p id="project-notice" role="status"></p></section>
+<section class="section" id="queue-section"><div class="toolbar"><h2>Очередь компрессии текущего проекта</h2><button id="queue-refresh">Обновить очередь</button><button id="queue-retry-visible" disabled>Повторить ошибки на странице</button></div><p>Повтор ставит observation в очередь с новым лимитом попыток. Исходная память не удаляется. Для других проектов откройте их настройки.</p><div id="queue-content" aria-live="polite">Загрузка…</div><p id="queue-notice" role="status"></p></section>
 <div class="toolbar"><input type="search" id="search" placeholder="Поиск параметров и описаний…" aria-label="Поиск настроек"><button id="reload">Обновить</button><span id="count"></span></div>
 <div id="settings" aria-live="polite">Загрузка…</div>
 <div class="footer"><button id="save" class="primary" disabled>Сохранить изменения</button><span id="notice" role="status">Изменений нет</span></div>
@@ -157,11 +159,88 @@ button{border:1px solid #5b6380;color:var(--text);background:#313b52;border-radi
         }
         if(p.state==="running"){
           const link=document.createElement("a");link.href=p.viewer;link.textContent="Открыть Viewer";actions.append(link);
+          const queueLink=document.createElement("a");queueLink.href=new URL("/settings#queue-section",p.viewer).href;queueLink.textContent="Очередь и ошибки";actions.append(queueLink);
         }
         block.append(title,meta,queue,actions);area.append(block);
       }
     }catch(error){el("projects-section").hidden=false;area.textContent="Не удалось получить проекты: "+error.message;}
   }
+  const queueStatusLabels={pending:"Ожидает",running:"Выполняется",exhausted:"Попытки исчерпаны",retry_scheduled:"Назначен повтор",not_retryable:"Повтор недоступен"};
+  const queueErrors={compression_failed:"Ошибка компрессии",parse_failed:"Не удалось разобрать ответ модели",validation_failed:"Ответ модели не прошёл проверку",source_unavailable:"Исходные данные недоступны",dispatch_failed:"Не удалось поставить в очередь",compression_timeout:"Истёк таймаут компрессии",provider_failure:"Ошибка поставщика LLM",queue_processing_failed:"Ошибка обработки очереди",invalid_raw_observation:"Некорректное наблюдение",invalid_observation_identity:"Некорректный идентификатор"};
+  const errorLabel=(code)=>code?(queueErrors[code]||"Ошибка")+" ("+code+")":"";
+  const dateLabel=(value)=>{const date=new Date(value);return value&&Number.isFinite(date.getTime())?date.toLocaleString():"Время неизвестно";};
+  let retryVisible=[], legacyCursor=null, jobOffset=0, queueBusy=false, queueLoading=false;
+  function makeText(tag,text,cls){const node=document.createElement(tag);node.textContent=text;if(cls)node.className=cls;return node;}
+  function queueGroup(area,label,description){const section=document.createElement("div");section.className="queue-group";section.append(makeText("h3",label),makeText("p",description));const list=document.createElement("div");list.className="queue-list";section.append(list);area.append(section);return list;}
+  function queueRow(list,item,label,detail,retryable){
+    const row=document.createElement("div");row.className="queue-row";
+    const meta=document.createElement("div");
+    meta.append(makeText("strong",label,item.error||item.lastError?"queue-error":""),makeText("small",detail),makeText("small","Observation: "+item.observationId+" · Session: "+item.sessionId));
+    row.append(meta);
+    if(retryable){
+      const identity={sessionId:item.sessionId,observationId:item.observationId};
+      retryVisible.push(identity);
+      const button=makeText("button","Повторить");
+      button.addEventListener("click",()=>retryQueue([identity]));row.append(button);
+    }
+    list.append(row);
+  }
+  async function retryQueue(items){
+    if(queueBusy||queueLoading||!items.length)return;
+    if(items.length>1&&!confirm("Вернуть в очередь "+items.length+" задач?"))return;
+    queueBusy=true;el("queue-retry-visible").disabled=true;el("queue-notice").textContent="Постановка в очередь…";
+    let message="";
+    try{
+      // Server accepts bounded batches. Do not bypass the durable queue.
+      let accepted=0,skipped=0;
+      for(let i=0;i<items.length;i+=50){
+        const r=await fetch("/settings/queue/retry",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({items:items.slice(i,i+50)})});
+        const body=await r.json();if(!r.ok)throw new Error(body.error||"HTTP "+r.status);
+        accepted+=body.accepted;skipped+=body.results.length-body.accepted;
+      }
+      message="Поставлено в очередь: "+accepted+"; пропущено (уже в очереди, не ошибка или нет источника): "+skipped+". Результат появится после обработки.";
+    }catch(error){message="Ошибка постановки: "+error.message+". Обновите состояние перед повтором.";}
+    finally{queueBusy=false;await loadQueue(legacyCursor,jobOffset);el("queue-notice").textContent=message;}
+  }
+  async function loadQueue(cursor=null,offset=0){
+    if(queueBusy||queueLoading)return;
+    queueLoading=true;
+    const area=el("queue-content");el("queue-refresh").disabled=true;el("queue-retry-visible").disabled=true;
+    retryVisible=[];
+    try{
+      const params=new URLSearchParams({offset:String(offset)});if(cursor)params.set("cursor",cursor);
+      const url="/settings/queue?"+params.toString();
+      const r=await fetch(url,{cache:"no-store"});const body=await r.json();if(!r.ok)throw new Error(body.error||"HTTP "+r.status);
+      legacyCursor=cursor;jobOffset=body.jobOffset;area.replaceChildren();
+      const summary=document.createElement("div");summary.className="queue-summary";
+      for(const [name,n] of [["Ожидают",body.status.pending],["В работе",body.status.running],["Исчерпали попытки",body.status.exhausted],["Успешно с запуска",body.status.completedSinceStart],["Сбоев с запуска",body.status.failuresSinceStart]]){
+        const stat=document.createElement("div");stat.className="queue-stat";stat.append(makeText("strong",String(n)),makeText("small",name));summary.append(stat);
+      }
+      area.append(summary,makeText("p","Активные настройки: "+body.settings.maxAttempts+" попытки; задержка "+body.settings.retryBaseMs+"–"+body.settings.retryMaxMs+" мс; восстановление каждые "+body.settings.backfillMs+" мс. Изменить можно в группе «Очередь компрессии» ниже."));
+      const jobs=queueGroup(area,"Текущие задачи","Показано "+body.jobs.length+" из "+body.totalJobs+" (смещение "+body.jobOffset+"). Сначала задачи с исчерпанными попытками.");
+      if(!body.jobs.length)jobs.append(makeText("p","Очередь пуста"));
+      for(const job of body.jobs)queueRow(jobs,{...job,error:job.lastError},(queueStatusLabels[job.status]||job.status)+(job.lastError?" · "+errorLabel(job.lastError):""),"Попыток: "+job.attempts+" · Создана: "+dateLabel(job.enqueuedAt)+(job.status==="pending"?" · Следующая: "+dateLabel(job.dueAt):""),job.status==="exhausted");
+      const jobPages=document.createElement("div");jobPages.className="toolbar";
+      if(body.jobOffset>0){const prev=makeText("button","Предыдущие задачи");prev.addEventListener("click",()=>loadQueue(legacyCursor,Math.max(0,body.jobOffset-body.jobPageSize)));jobPages.append(prev);}
+      if(body.jobOffset+body.jobPageSize<body.totalJobs){const next=makeText("button","Следующие задачи");next.addEventListener("click",()=>loadQueue(legacyCursor,body.jobOffset+body.jobPageSize));jobPages.append(next);}
+      area.append(jobPages);
+      const old=queueGroup(area,"Старые ошибки вне очереди","Исторические observations, которые ранее не были поставлены на повтор. Сканирование постраничное.");
+      if(!body.legacy.length)old.append(makeText("p","На этой странице ошибок нет"));
+      for(const item of body.legacy)queueRow(old,item,errorLabel(item.error),"Попыток: "+item.attempts+" · "+dateLabel(item.at)+(item.retryable?"":" · Исходные данные недоступны"),item.retryable);
+      const pages=document.createElement("div");pages.className="toolbar";
+      if(cursor){const first=makeText("button","Сначала");first.addEventListener("click",()=>loadQueue(null,jobOffset));pages.append(first);}
+      if(body.nextCursor){const next=makeText("button","Следующая страница старых ошибок");next.addEventListener("click",()=>loadQueue(body.nextCursor,jobOffset));pages.append(next);}
+      area.append(pages);
+      const history=queueGroup(area,"Журнал неудачных попыток","Последние "+body.historyLimit+" сбоев после установки обновления. Сохраняются и после успешного повтора; старые записи не реконструируются.");
+      if(!body.history.length)history.append(makeText("p","Новых сбоев пока нет"));
+      for(const item of body.history)queueRow(history,item,errorLabel(item.error),"Попытка "+item.attempt+" · "+dateLabel(item.at)+" · "+(queueStatusLabels[item.outcome]||item.outcome),false);
+      el("queue-retry-visible").disabled=!retryVisible.length;
+    }catch(error){area.textContent="Не удалось получить очередь: "+error.message;}
+    finally{queueLoading=false;el("queue-refresh").disabled=false;}
+  }
+  el("queue-refresh").addEventListener("click",()=>loadQueue(legacyCursor,jobOffset));
+  el("queue-retry-visible").addEventListener("click",()=>retryQueue(retryVisible.slice()));
+  loadQueue();
   el("projects-reload").addEventListener("click",loadProjects);
   loadProjects();
   el("search").addEventListener("input",render);

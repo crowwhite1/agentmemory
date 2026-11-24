@@ -95,3 +95,25 @@ No periodic polling. The panel requires at least one running Viewer; if all
 instances are stopped, start a project with the CLI or the macOS control app.
 Settings edits target the shared .env rather than the generated Compose copy;
 routing variables are protected and runtime changes require restart.
+
+## Compression queue controls
+
+The local Settings page exposes the running instance's queue, the most recent
+200 failed attempts persisted in its StateKV, and a paginated list of historical
+failed observations not represented by a queue job. Failure records contain
+identity, timestamp, attempt number, safe error category and retry outcome,
+never raw prompts or provider response bodies. Historical attempts before this
+feature cannot be reconstructed; existing observation failure metadata is
+shown separately. Recovered observations retain their recent failure history.
+
+Single-item retry and retry of visible errors enqueue work and reset the queue
+attempt budget, not the observation's historical attempt count. Already queued,
+completed or source-less observations are not reprocessed. No direct LLM
+requests are issued by the Viewer. Queue pages load on opening, explicit
+refresh, pagination and after a user retry. Each other project's queue is
+available from its own Viewer link; no cross-store access.
+
+The shared settings catalog always exposes max attempts (default 2), recovery
+scan interval (300000 ms), initial retry delay (15000 ms), and maximum retry
+delay (300000 ms). Saving validates ranges. Restart the relevant workers to
+apply values. The model and global generation lock remain unchanged.

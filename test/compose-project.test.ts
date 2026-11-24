@@ -108,6 +108,17 @@ describe("Worker Compose project", () => {
     expect(result.stdout).toBe("value with spaces;$(false)");
   });
 
+  it("forwards all explicit compression queue settings to each worker", () => {
+    const workerEnvironment = {
+      AGENTMEMORY_COMPRESSION_QUEUE_MAX_ATTEMPTS: "5",
+      AGENTMEMORY_COMPRESSION_QUEUE_BACKFILL_MS: "60000",
+      AGENTMEMORY_COMPRESSION_QUEUE_RETRY_BASE_MS: "2000",
+      AGENTMEMORY_COMPRESSION_QUEUE_RETRY_MAX_MS: "9000",
+    };
+    expect(parse(renderWorkerCompose(options({ workerEnvironment }))).containers.agentmemory.environment)
+      .toMatchObject(workerEnvironment);
+  });
+
   it("forwards CLI and viewer overrides from the shell ahead of env-file values", () => {
     const text = renderWorkerCompose(options({ workerEnvironment: {
       AGENTMEMORY_TOOLS: "core", AGENTMEMORY_VIEWER_HOST: "127.0.0.1",
