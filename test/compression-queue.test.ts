@@ -146,6 +146,38 @@ describe("StateKV compression queue", () => {
     } finally { worker.stop(); }
   });
 
+  it("exposes why exhausted jobs cannot be retried without invoking the model or deleting evidence", async () => {
+    const { kv, sdk, bucket, raw } = rig();
+    const compression = { status: "failed", revision: "old", attempts: 2, error: "parse_failed" };
+    const ids = ["missing", "source-less", "complete", "recoverable"];
+    for (const observationId of ids) {
+      const id = compressionQueueKey(raw.sessionId, observationId);
+      bucket(KV.compressionQueue).set(id, { id, sessionId: raw.sessionId, observationId,
+        enqueuedAt: 1, dueAt: 0, attempts: 2, status: "exhausted", lastError: "parse_failed" });
+    }
+    bucket(KV.observations(raw.sessionId)).set("source-less", { id: "source-less",
+      sessionId: raw.sessionId, timestamp: raw.timestamp, hookType: raw.hookType, compression });
+    bucket(KV.observations(raw.sessionId)).set("complete", { ...raw, id: "complete", title: "Done", compression: {...compression, status: "complete"} });
+    bucket(KV.observations(raw.sessionId)).set("recoverable", { ...raw, id: "recoverable", compression });
+    const worker = registerCompressionQueue(sdk as never, kv as never);
+    try {
+      expect(await worker.inspect()).toMatchObject({ jobs: [
+        { observationId: "missing", retryable: false, retryBlocked: "observation_missing" },
+        { observationId: "source-less", retryable: false, retryBlocked: "source_unavailable" },
+        { observationId: "complete", retryable: false, retryBlocked: "not_failed" },
+        { observationId: "recoverable", retryable: true },
+      ] });
+      expect(await worker.retry({items: ids.map(observationId => ({sessionId: raw.sessionId, observationId}))})).toMatchObject({
+        accepted: 1, results: [{outcome: "observation_missing"}, {outcome: "source_unavailable"}, {outcome: "not_failed"}, {outcome: "queued"}],
+      });
+      expect(sdk.trigger).not.toHaveBeenCalled();
+      expect(bucket(KV.compressionQueue).size).toBe(4);
+      expect(bucket(KV.compressionQueue).get(compressionQueueKey(raw.sessionId, "recoverable"))).toMatchObject({status:"pending", attempts:0});
+      expect(bucket(KV.compressionQueue).get(compressionQueueKey(raw.sessionId, "recoverable"))).not.toHaveProperty("lastError");
+      expect(bucket(KV.observations(raw.sessionId)).get("source-less")).toMatchObject({compression});
+    } finally { worker.stop(); }
+  });
+
   it("uses validated retry delays and does not log raw provider errors", async () => {
     vi.stubEnv("AGENTMEMORY_COMPRESSION_QUEUE_MAX_ATTEMPTS", "2");
     vi.stubEnv("AGENTMEMORY_COMPRESSION_QUEUE_RETRY_BASE_MS", "2000");

@@ -133,3 +133,5 @@ observation compression, leaving summaries and other calls unchanged. The
 response is always validated against the existing Zod schema before saving.
 Set xml (or clear the setting) and restart if the model/runtime does not support
 structured output. No observation schema or stored source migration is needed.
+
+Exhausted jobs display the current retry eligibility separately from the historical model error. Missing observations, missing retained source, identity mismatches and already completed observations are not sent to the model; queue entries and evidence are not removed by inspection or rejected retries. Retry responses identify the reason for each rejected item. A newly accepted retry starts without the previous job's error label; failure history is retained. Qwen aliases view_image and file_copy normalize to image and file_write respectively in XML and JSON.

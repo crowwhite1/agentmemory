@@ -139,14 +139,36 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
     }
   }
 
+  function retryBlock(row: StoredObservation | null | undefined, identity: CompressionIdentity): string | undefined {
+    if (!row) return "observation_missing";
+    if (row.id !== identity.observationId || row.sessionId !== identity.sessionId) return "identity_mismatch";
+    if (!needsCompression(row)) return "not_failed";
+    if (!compressionRaw(row)) return "source_unavailable";
+    return undefined;
+  }
+
   async function inspect(cursor?: string, offset = 0) {
     const after = readLegacyCursor(cursor);
     if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("Invalid queue offset");
     const jobs = (await kv.list<CompressionQueueJob>(KV.compressionQueue)).filter(Boolean);
     const queued = new Set(jobs.map(j => j.id));
     const priority = { exhausted: 0, running: 1, pending: 2 };
-    const visibleJobs = jobs.sort((a, b) => priority[a.status] - priority[b.status] || a.enqueuedAt - b.enqueuedAt)
-      .slice(offset, offset + JOB_PAGE_SIZE).map(j => ({ ...j, ...(j.lastError ? { lastError: safeError(j.lastError) } : {}) }));
+    const page = jobs.sort((a, b) => priority[a.status] - priority[b.status] || a.enqueuedAt - b.enqueuedAt)
+      .slice(offset, offset + JOB_PAGE_SIZE);
+    const visibleJobs = [];
+    for (const job of page) {
+      let retryBlocked: string | undefined;
+      if (job.status === "exhausted") {
+        if (active.has(job.id)) retryBlocked = "already_queued";
+        else {
+          const row = await kv.get<StoredObservation>(KV.observations(job.sessionId), job.observationId);
+          retryBlocked = retryBlock(row, job);
+        }
+      }
+      visibleJobs.push({ ...job, ...(job.lastError ? { lastError: safeError(job.lastError) } : {}),
+        retryable: job.status === "exhausted" && !retryBlocked,
+        ...(retryBlocked ? { retryBlocked } : {}) });
+    }
     const legacy: Array<CompressionIdentity & { attempts: number; error: string; at?: string; retryable: boolean }> = [];
     const sessions = (await kv.list<Session>(KV.sessions)).filter(s => typeof s?.id === "string" && s.id)
       .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
@@ -194,16 +216,16 @@ export function registerCompressionQueue(sdk: IIIClient, kv: StateKV): {
       if (seen.has(id)) continue;
       seen.add(id);
       const outcome = await withKeyedLock(`compression-queue:${id}`, async () => {
-        const row = await kv.get<StoredObservation>(KV.observations(sessionId), observationId);
-        if (!row || row.id !== observationId || row.sessionId !== sessionId || !needsCompression(row)) return "not_failed";
-        if (!compressionRaw(row)) return "source_unavailable";
         const job = await kv.get<CompressionQueueJob>(KV.compressionQueue, id);
-        if (job && job.status !== "exhausted") return "already_queued";
-        if (!job && row.compression?.status !== "failed") return "not_failed";
+        if (active.has(id) || (job && job.status !== "exhausted")) return "already_queued";
+        const row = await kv.get<StoredObservation>(KV.observations(sessionId), observationId);
+        const blocked = retryBlock(row, item);
+        if (blocked) return blocked;
+        if (!job && row?.compression?.status !== "failed") return "not_failed";
         const now = Date.now();
         await kv.set(KV.compressionQueue, id, {
           id, sessionId, observationId, enqueuedAt: now, dueAt: now, attempts: 0,
-          status: "pending", ...(job?.lastError ? { lastError: safeError(job.lastError) } : {}),
+          status: "pending",
         } satisfies CompressionQueueJob);
         return "queued";
       });

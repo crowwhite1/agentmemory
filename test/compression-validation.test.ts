@@ -92,6 +92,15 @@ describe("compression output boundaries", () => {
     expect(r.stored().compression?.status).toBe("complete");
   });
 
+  it.each([["view_image", "image"], ["file_copy", "file_write"]])("normalizes Qwen type %s to %s", async (alias, expected) => {
+    const provider = providerReturning(xml.replace("<type>file_edit</type>", "<type>"+alias+"</type>"));
+    const r = rig(provider);
+    expect(await r.call()).toMatchObject({ success: true, compressed: { type: expected } });
+    expect(provider.compress).toHaveBeenCalledTimes(1);
+    const data = CompressOutputSchema.parse(parseCompressionXml(xml));
+    expect(parseCompressionOutput(JSON.stringify({...data, type: alias}))).toMatchObject({type: expected});
+  });
+
   it("does not relax other list boundaries or nested markup", () => {
     expect(parseCompressionXml(xml.replace("<facts><fact>The server port is now 3111.</fact></facts>", "<facts>one, two</facts>"))).toBeNull();
     expect(parseCompressionXml(xml.replace("<files><file>config.ts</file></files>", "<files>config.ts, other.ts</files>"))).toBeNull();
