@@ -36,4 +36,5 @@ npm run skills:check
 npm run typecheck:hooks
 npm test
 "$PYTHON" scripts/test-proxy-migration.py
+"$PYTHON" scripts/test-project-memory.py
 exec "$PYTHON" scripts/migrate-from-proxy.py
